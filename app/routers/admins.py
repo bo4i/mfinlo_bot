@@ -26,24 +26,25 @@ async def admin_accept_request(callback_query: CallbackQuery, bot: Bot) -> None:
     request_id = int(callback_query.data.split("_")[2])
     admin_id = callback_query.from_user.id
 
-    db = next(get_db())
-    request = db.query(Request).filter(Request.id == request_id).first()
-    if not request:
-        await callback_query.message.answer("Заявка не найдена.")
-        return
+    with get_db() as db:
+        request = db.query(Request).filter(Request.id == request_id).first()
+        if not request:
+            await callback_query.message.answer("Заявка не найдена.")
+            return
 
-    if request.status != "Принято":
-        await callback_query.message.answer(f"Эта заявка уже имеет статус: {request.status}.")
-        return
+        if request.status != "Принято":
+            await callback_query.message.answer(f"Эта заявка уже имеет статус: {request.status}.")
+            return
 
     request.status = "Принято к исполнению"
     request.assigned_admin_id = admin_id
+    admin_user = db.query(User).filter(User.id == admin_id).first()
     db.commit()
     logger.info("Заявка ID:%s принята к исполнению администратором %s.", request.id, admin_id)
 
     try:
         await callback_query.message.edit_text(
-            f"{callback_query.message.text}\n\n✅ Статус: Принято к исполнению ({admin_user.full_name})",
+            f"{callback_query.message.text}\n\n✅ Статус: Принято к исполнению ({admin_user.full_name if admin_user else 'Администратор'})",
             reply_markup=None,
         )
     except Exception as exc:  # noqa: BLE001
@@ -68,47 +69,47 @@ async def admin_clarify_start(callback_query: CallbackQuery, state: FSMContext, 
     request_id = int(callback_query.data.split("_")[3])
     admin_id = callback_query.from_user.id
 
-    db = next(get_db())
-    request = db.query(Request).filter(Request.id == request_id).first()
+    with get_db() as db:
+        request = db.query(Request).filter(Request.id == request_id).first()
 
-    if not request:
-        await callback_query.message.answer("Заявка не найдена.")
-        return
+        if not request:
+            await callback_query.message.answer("Заявка не найдена.")
+            return
 
-    if request.status == "Выполнено":
-        await callback_query.message.answer("Эта заявка уже выполнена.")
-        return
+        if request.status == "Выполнено":
+            await callback_query.message.answer("Эта заявка уже выполнена.")
+            return
 
-    await state.update_data(
-        target_user_id=request.user_id,
-        request_id=request_id,
-        original_admin_message_id=callback_query.message.message_id,
-    )
-    await state.set_state(ClarificationState.admin_active_dialogue)
-
-    user_state = FSMContext(
-        storage=state.storage,
-        key=StorageKey(bot_id=bot.id, chat_id=request.user_id, user_id=request.user_id),
-    )
-    await user_state.update_data(target_admin_id=admin_id, request_id=request_id)
-    await user_state.set_state(ClarificationState.user_active_dialogue)
-
-    if not request.assigned_admin_id:
-        request.assigned_admin_id = admin_id
-    request.status = "Уточнение"
-    db.commit()
-    logger.info("Администратор %s начал уточнение для заявки %s. Статус: Уточнение.", admin_id, request.id)
-
-    try:
-        await bot.send_message(
-            chat_id=request.user_id,
-            text=(
-                f"Администратор начал диалог по вашей заявке ID:{request.id} ({request.description[:50]}...).\n"
-                "Вы можете отправлять сообщения в ответ."
-            ),
+        await state.update_data(
+            target_user_id=request.user_id,
+            request_id=request_id,
+            original_admin_message_id=callback_query.message.message_id,
         )
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Не удалось уведомить пользователя %s о начале диалога уточнения: %s", request.user_id, exc)
+        await state.set_state(ClarificationState.admin_active_dialogue)
+
+        user_state = FSMContext(
+            storage=state.storage,
+            key=StorageKey(bot_id=bot.id, chat_id=request.user_id, user_id=request.user_id),
+        )
+        await user_state.update_data(target_admin_id=admin_id, request_id=request_id)
+        await user_state.set_state(ClarificationState.user_active_dialogue)
+
+        if not request.assigned_admin_id:
+            request.assigned_admin_id = admin_id
+        request.status = "Уточнение"
+        db.commit()
+        logger.info("Администратор %s начал уточнение для заявки %s. Статус: Уточнение.", admin_id, request.id)
+
+        try:
+            await bot.send_message(
+                chat_id=request.user_id,
+                text=(
+                    f"Администратор начал диалог по вашей заявке ID:{request.id} ({request.description[:50]}...).\n"
+                    "Вы можете отправлять сообщения в ответ."
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Не удалось уведомить пользователя %s о начале диалога уточнения: %s", request.user_id, exc)
 
     await callback_query.message.answer(
         "Вы начали диалог уточнения с пользователем. Отправляйте сообщения. Для завершения диалога нажмите кнопку:",
@@ -130,25 +131,25 @@ async def process_admin_clarification_message(message: Message, state: FSMContex
         await state.clear()
         return
 
-    db = next(get_db())
-    request = db.query(Request).filter(Request.id == request_id).first()
+    with get_db() as db:
+        request = db.query(Request).filter(Request.id == request_id).first()
 
-    try:
-        await bot.send_message(
-            chat_id=target_user_id,
-            text=(
-                f"💬 От администратора по заявке ID:{request.id} ({request.description[:50] if request else '...'})\n\n"
-                f"{message.text}"
-            ),
-        )
-    except Exception as exc:  # noqa: BLE001
-        await message.answer("Не удалось отправить сообщение пользователю. Возможно, он заблокировал бота.")
-        logger.error(
-            "Не удалось отправить сообщение пользователю %s для заявки %s: %s",
-            target_user_id,
-            request_id,
-            exc,
-        )
+        try:
+            await bot.send_message(
+                chat_id=target_user_id,
+                text=(
+                    f"💬 От администратора по заявке ID:{request.id} ({request.description[:50] if request else '...'})\n\n"
+                    f"{message.text}"
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            await message.answer("Не удалось отправить сообщение пользователю. Возможно, он заблокировал бота.")
+            logger.error(
+                "Не удалось отправить сообщение пользователю %s для заявки %s: %s",
+                target_user_id,
+                request_id,
+                exc,
+            )
 
 
 @router.callback_query(F.data.startswith("admin_clarify_end_"))
@@ -161,18 +162,18 @@ async def admin_clarify_end(callback_query: CallbackQuery, state: FSMContext, bo
     target_user_id = state_data.get("target_user_id")
     original_admin_message_id = state_data.get("original_admin_message_id")
 
-    db = next(get_db())
-    request = db.query(Request).filter(Request.id == request_id).first()
+    with get_db() as db:
+        request = db.query(Request).filter(Request.id == request_id).first()
 
-    if not request:
-        await callback_query.message.answer("Заявка не найдена.")
-        return
+        if not request:
+            await callback_query.message.answer("Заявка не найдена.")
+            return
 
-    request.status = "Принято к исполнению"
-    request.assigned_admin_id = request.assigned_admin_id or admin_id
-    db.commit()
+        request.status = "Принято к исполнению"
+        request.assigned_admin_id = request.assigned_admin_id or admin_id
+        db.commit()
 
-    await state.clear()
+        await state.clear()
 
     if target_user_id:
         user_state = FSMContext(
@@ -181,7 +182,8 @@ async def admin_clarify_end(callback_query: CallbackQuery, state: FSMContext, bo
         )
         user_state_data = await user_state.get_data()
         current_user_state = await user_state.get_state()
-        if current_user_state == ClarificationState.user_active_dialogue and user_state_data.get("request_id") == request_id:
+        if current_user_state == ClarificationState.user_active_dialogue and user_state_data.get(
+                "request_id") == request_id:
             await user_state.clear()
             try:
                 await bot.send_message(
@@ -246,15 +248,15 @@ async def admin_clarify_end(callback_query: CallbackQuery, state: FSMContext, bo
 
 @router.message(F.text == "Мои принятые заявки")
 async def show_assigned_requests(message: Message) -> None:
-    db = next(get_db())
     admin_id = message.from_user.id
-    admin_user = db.query(User).filter(User.id == admin_id).first()
+    with get_db() as db:
+        admin_user = db.query(User).filter(User.id == admin_id).first()
 
-    if not admin_user or admin_user.role not in ["it_admin", "aho_admin"]:
-        await message.answer("У вас нет доступа к этой функции.")
-        return
+        if not admin_user or admin_user.role not in ["it_admin", "aho_admin"]:
+            await message.answer("У вас нет доступа к этой функции.")
+            return
 
-    two_days_ago = datetime.now() - datetime.timedelta(days=2)
+        two_days_ago = datetime.now() - datetime.timedelta(days=2)
 
     requests = (
         db.query(Request)
@@ -291,8 +293,7 @@ async def show_assigned_requests(message: Message) -> None:
             keyboard_to_show = get_admin_done_keyboard(req.id)
         elif req.status == "Уточнение":
             keyboard_to_show = get_admin_clarify_active_keyboard(req.id)
-
-        await message.answer(request_text, reply_markup=keyboard_to_show)
+            await message.answer(request_text, reply_markup=keyboard_to_show)
 
 
 @router.callback_query(F.data.startswith("admin_done_"))
@@ -301,38 +302,38 @@ async def admin_done_request(callback_query: CallbackQuery, bot: Bot) -> None:
     request_id = int(callback_query.data.split("_")[2])
     admin_id = callback_query.from_user.id
 
-    db = next(get_db())
-    request = db.query(Request).filter(Request.id == request_id).first()
+    with get_db() as db:
+        request = db.query(Request).filter(Request.id == request_id).first()
 
-    if not request:
-        await callback_query.message.answer("Заявка не найдена.")
-        return
+        if not request:
+            await callback_query.message.answer("Заявка не найдена.")
+            return
 
-    if request.assigned_admin_id != admin_id:
-        await callback_query.message.answer("Вы не являетесь исполнителем этой заявки.")
-        return
+        if request.assigned_admin_id != admin_id:
+            await callback_query.message.answer("Вы не являетесь исполнителем этой заявки.")
+            return
 
-    if request.status == "Выполнено":
-        await callback_query.message.answer("Эта заявка уже отмечена как выполненная.")
-        return
+        if request.status == "Выполнено":
+            await callback_query.message.answer("Эта заявка уже отмечена как выполненная.")
+            return
 
-    request.status = "Выполнено"
-    request.completed_at = datetime.now()
-    db.commit()
-    logger.info("Заявка ID:%s отмечена как 'Выполнено' администратором %s.", request.id, admin_id)
+        request.status = "Выполнено"
+        request.completed_at = datetime.now()
+        db.commit()
+        logger.info("Заявка ID:%s отмечена как 'Выполнено' администратором %s.", request.id, admin_id)
 
-    try:
-        await callback_query.message.edit_text(
-            f"{callback_query.message.text}\n\n✅ Статус: Выполнено",
-            reply_markup=None,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Не удалось обновить сообщение администратору для заявки %s: %s", request.id, exc)
+        try:
+            await callback_query.message.edit_text(
+                f"{callback_query.message.text}\n\n✅ Статус: Выполнено",
+                reply_markup=None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Не удалось обновить сообщение администратору для заявки %s: %s", request.id, exc)
 
-    try:
-        await bot.send_message(
-            chat_id=request.user_id,
-            text=f"🎉 Ваша заявка ID:{request.id} ({request.description[:50]}...) исполнена!",
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Не удалось уведомить пользователя %s о выполнении заявки %s: %s", request.user_id, request.id, exc)
+        try:
+            await bot.send_message(
+                chat_id=request.user_id,
+                text=f"🎉 Ваша заявка ID:{request.id} ({request.description[:50]}...) исполнена!",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Не удалось уведомить пользователя %s о выполнении заявки %s: %s", request.user_id, request.id, exc)

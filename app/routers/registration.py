@@ -22,36 +22,36 @@ router = Router()
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
-    db = next(get_db())
-    user = db.query(User).filter(User.id == message.from_user.id).first()
     await state.clear()
+    with get_db() as db:
+        user = db.query(User).filter(User.id == message.from_user.id).first()
 
-    if not user:
-        new_user = User(id=message.from_user.id)
-        db.add(new_user)
-        try:
-            db.commit()
-            db.refresh(new_user)
-            logger.info("Новый пользователь %s добавлен в БД.", message.from_user.id)
-        except IntegrityError:
-            db.rollback()
-            logger.warning(
-                "Пользователь %s уже существует, но не был найден в начале сессии. Продолжаем.",
-                message.from_user.id,
-            )
-            user = db.query(User).filter(User.id == message.from_user.id).first()
-            if not user:
-                await message.answer("Произошла ошибка при инициализации пользователя. Попробуйте еще раз.")
-                return
+        if not user:
+            new_user = User(id=message.from_user.id)
+            db.add(new_user)
+            try:
+                db.commit()
+                db.refresh(new_user)
+                logger.info("Новый пользователь %s добавлен в БД.", message.from_user.id)
+            except IntegrityError:
+                db.rollback()
+                logger.warning(
+                    "Пользователь %s уже существует, но не был найден в начале сессии. Продолжаем.",
+                    message.from_user.id,
+                )
+                user = db.query(User).filter(User.id == message.from_user.id).first()
+                if not user:
+                    await message.answer("Произошла ошибка при инициализации пользователя. Попробуйте еще раз.")
+                    return
 
-        await message.answer("Добро пожаловать! Для использования бота необходимо зарегистрироваться. Укажите ваше ФИО:")
-        await state.set_state(RegistrationStates.waiting_for_full_name)
-    elif not user.registered:
-        await message.answer("Вы не завершили регистрацию. Пожалуйста, укажите ваше ФИО:")
-        await state.set_state(RegistrationStates.waiting_for_full_name)
-    else:
-        await message.answer("С возвращением! Главное меню:", reply_markup=get_main_menu_keyboard(user.role))
-        await state.clear()
+            await message.answer("Добро пожаловать! Для использования бота необходимо зарегистрироваться. Укажите ваше ФИО:")
+            await state.set_state(RegistrationStates.waiting_for_full_name)
+        elif not user.registered:
+            await message.answer("Вы не завершили регистрацию. Пожалуйста, укажите ваше ФИО:")
+            await state.set_state(RegistrationStates.waiting_for_full_name)
+        else:
+            await message.answer("С возвращением! Главное меню:", reply_markup=get_main_menu_keyboard(user.role))
+            await state.clear()
 
 
 @router.message(RegistrationStates.waiting_for_full_name)
@@ -149,22 +149,22 @@ async def process_office_number(message: Message, state: FSMContext) -> None:
 
 async def complete_registration(message: Message, state: FSMContext) -> None:
     user_data = await state.get_data()
-    db = next(get_db())
-    user = db.query(User).filter(User.id == message.from_user.id).first()
+    with get_db() as db:
+        user = db.query(User).filter(User.id == message.from_user.id).first()
 
-    if user:
-        user.full_name = user_data.get("full_name")
-        user.phone_number = user_data.get("phone_number")
-        user.organization = user_data.get("organization")
-        user.office_number = user_data.get("office_number") if "office_number" in user_data else None
-        user.registered = True
-        db.commit()
-        logger.info("Пользователь %s успешно зарегистрирован.", user.id)
-        await message.answer(
-            "Регистрация завершена! Теперь вы можете создавать заявки.",
-            reply_markup=get_main_menu_keyboard(user.role),
-        )
-        await state.clear()
-    else:
-        await message.answer("Произошла ошибка при сохранении данных. Пожалуйста, попробуйте начать регистрацию заново (/start).")
-        await state.clear()
+        if user:
+            user.full_name = user_data.get("full_name")
+            user.phone_number = user_data.get("phone_number")
+            user.organization = user_data.get("organization")
+            user.office_number = user_data.get("office_number") if "office_number" in user_data else None
+            user.registered = True
+            db.commit()
+            logger.info("Пользователь %s успешно зарегистрирован.", user.id)
+            await message.answer(
+                "Регистрация завершена! Теперь вы можете создавать заявки.",
+                reply_markup=get_main_menu_keyboard(user.role),
+            )
+            await state.clear()
+        else:
+            await message.answer("Произошла ошибка при сохранении данных. Пожалуйста, попробуйте начать регистрацию заново (/start).")
+            await state.clear()

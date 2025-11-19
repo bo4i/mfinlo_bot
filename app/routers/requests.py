@@ -18,12 +18,12 @@ router = Router()
 
 @router.message(F.text.in_({"Создать ИТ-заявку", "Создать АХО-заявку"}))
 async def start_new_request(message: Message, state: FSMContext) -> None:
-    db = next(get_db())
-    user = db.query(User).filter(User.id == message.from_user.id).first()
+    with get_db() as db:
+        user = db.query(User).filter(User.id == message.from_user.id).first()
 
-    if not user or not user.registered:
-        await message.answer("Вы не зарегистрированы или регистрация не завершена. Пожалуйста, начните с команды /start.")
-        return
+        if not user or not user.registered:
+            await message.answer("Вы не зарегистрированы или регистрация не завершена. Пожалуйста, начните с команды /start.")
+            return
 
     request_type = "IT" if message.text == "Создать ИТ-заявку" else "AHO"
     await state.update_data(request_type=request_type)
@@ -72,31 +72,30 @@ async def save_request(message: Message, state: FSMContext, user_id: int, bot: B
     urgency = user_data.get("urgency")
     due_date = user_data.get("due_date") if urgency == "DATE" else None
 
-    db = next(get_db())
-    user = db.query(User).filter(User.id == user_id).first()
+    with get_db() as db:
+        user = db.query(User).filter(User.id == user_id).first()
 
-    if not user:
-        await message.answer("Произошла ошибка: пользователь не найден. Пожалуйста, попробуйте начать заново (/start).")
+        if not user:
+            await message.answer("Произошла ошибка: пользователь не найден. Пожалуйста, попробуйте начать заново (/start).")
+            await state.clear()
+            return
+
+        new_request = Request(
+            user_id=user_id,
+            request_type=request_type,
+            description=description,
+            urgency=urgency,
+            due_date=due_date,
+            status="Принято",
+        )
+        db.add(new_request)
+        db.commit()
+        db.refresh(new_request)
+
+        await message.answer("Ваша заявка успешно создана и будет рассмотрена.")
         await state.clear()
-        return
-
-    new_request = Request(
-        user_id=user_id,
-        request_type=request_type,
-        description=description,
-        urgency=urgency,
-        due_date=due_date,
-        status="Принято",
-    )
-    db.add(new_request)
-    db.commit()
-    db.refresh(new_request)
-
-    await message.answer("Ваша заявка успешно создана и будет рассмотрена.")
-    await state.clear()
-
-    await notify_admins(db, new_request, user, bot)
-    logger.info("Заявка ID:%s от пользователя %s создана и отправлена администраторам.", new_request.id, user.id)
+        await notify_admins(db, new_request, user, bot)
+        logger.info("Заявка ID:%s от пользователя %s создана и отправлена администраторам.", new_request.id, user.id)
 
 
 async def notify_admins(db_session, request: Request, user: User, bot: Bot) -> None:
