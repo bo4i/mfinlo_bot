@@ -209,6 +209,35 @@ async def admin_clarify_end(callback_query: CallbackQuery, state: FSMContext, bo
 
         await state.clear()
 
+        request_data = {
+            "id": request.id,
+            "description": request.description or "",
+            "request_type": request.request_type,
+            "urgency": request.urgency,
+            "due_date": request.due_date,
+            "status": request.status,
+            "admin_message_id": request.admin_message_id,
+            "user_id": request.user_id,
+        }
+
+        user_creator = db.query(User).filter(User.id == request.user_id).first()
+        user_details = None
+        if user_creator:
+            user_details = f"📞 Телефон: {user_creator.phone_number}\n🏢 Организация: {user_creator.organization}"
+            if user_creator.office_number:
+                user_details += f"\n🚪 Кабинет: {user_creator.office_number}"
+            user_full_name = user_creator.full_name
+        else:
+            user_full_name = "Неизвестный пользователь"
+        request_info = (
+            f"🚨 Заявка ({request_data['request_type']}) от {user_full_name} 🚨\n"
+            f"{user_details or 'Пользователь не найден'}\n"
+            f"📝 Описание: {request_data['description']}\n"
+            f"⏰ Срочность: {'Как можно скорее' if request_data['urgency'] == 'ASAP' else f'К {request_data['due_date']}'}\n"
+            f"🆔 Заявка ID: {request_data['id']}\n\n"
+            f"✅ Статус: {request_data['status']}"
+        )
+
     if target_user_id:
         user_state = FSMContext(
             storage=state.storage,
@@ -223,7 +252,7 @@ async def admin_clarify_end(callback_query: CallbackQuery, state: FSMContext, bo
                 await bot.send_message(
                     chat_id=target_user_id,
                     text=(
-                        f"Диалог по заявке ID:{request.id} ({request.description[:50] if request else '...'}) завершен администратором."
+                        f"Диалог по заявке ID:{request_data['id']} ({request_data['description'][:50] if request_data else '...'}) завершен администратором."
                     ),
                 )
             except Exception as exc:  # noqa: BLE001
@@ -235,50 +264,36 @@ async def admin_clarify_end(callback_query: CallbackQuery, state: FSMContext, bo
                 chat_id=callback_query.message.chat.id,
                 message_id=original_admin_message_id,
                 text=callback_query.message.text,
-                reply_markup=get_admin_post_clarification_keyboard(request.id),
+                reply_markup=get_admin_post_clarification_keyboard(request_data["id"]),
             )
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "Не удалось обновить сообщение администратору после завершения диалога для заявки %s: %s",
-                request.id,
+                request_data["id"],
                 exc,
             )
 
     try:
         await callback_query.message.edit_text(
             "Диалог уточнения завершен. Выберите дальнейшее действие.",
-            reply_markup=get_admin_post_clarification_keyboard(request.id),
+            reply_markup=get_admin_post_clarification_keyboard(request_data["id"]),
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("Не удалось обновить сообщение администратора при завершении диалога: %s", exc)
 
-    user_creator = db.query(User).filter(User.id == request.user_id).first()
-    user_details = f"📞 Телефон: {user_creator.phone_number}\n🏢 Организация: {user_creator.organization}"
-    if user_creator and user_creator.office_number:
-        user_details += f"\n🚪 Кабинет: {user_creator.office_number}"
-
-    request_info = (
-        f"🚨 Заявка ({request.request_type}) от {user_creator.full_name} 🚨\n"
-        f"{user_details}\n"
-        f"📝 Описание: {request.description}\n"
-        f"⏰ Срочность: {'Как можно скорее' if request.urgency == 'ASAP' else f'К {request.due_date}'}\n"
-        f"🆔 Заявка ID: {request.id}\n\n"
-        f"✅ Статус: {request.status}"
-    )
-
-    if request.admin_message_id:
+    if request_data["admin_message_id"]:
         try:
             await bot.edit_message_text(
                 chat_id=callback_query.message.chat.id,
-                message_id=request.admin_message_id,
+                message_id=request_data["admin_message_id"],
                 text=request_info,
-                reply_markup=get_admin_post_clarification_keyboard(request.id),
+                reply_markup=get_admin_post_clarification_keyboard(request_data["id"]),
             )
-            logger.info("Сообщение администратору для заявки %s обновлено после завершения диалога.", request.id)
+            logger.info("Сообщение администратору для заявки %s обновлено после завершения диалога.", request_data["id"])
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "Не удалось обновить сообщение администратору после завершения диалога для заявки %s: %s",
-                request.id,
+                request_data["id"],
                 exc,
             )
 
