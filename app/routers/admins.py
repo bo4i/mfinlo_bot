@@ -13,6 +13,7 @@ from app.keyboards.admin import (
     get_admin_clarify_active_keyboard,
     get_admin_done_keyboard,
     get_admin_new_request_keyboard,
+    get_admin_post_clarification_keyboard,
 )
 from app.states.clarification import ClarificationState
 
@@ -65,6 +66,34 @@ async def admin_accept_request(callback_query: CallbackQuery, bot: Bot) -> None:
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("Не удалось уведомить пользователя %s о принятии заявки %s: %s", request_user_id, request_id, exc)
+
+
+@router.callback_query(F.data.startswith("admin_decline_"))
+async def admin_decline_request(callback_query: CallbackQuery) -> None:
+    await callback_query.answer()
+    request_id = int(callback_query.data.split("_")[2])
+    admin_id = callback_query.from_user.id
+
+    with get_db() as db:
+        request = db.query(Request).filter(Request.id == request_id).first()
+
+        if not request:
+            await callback_query.message.answer("Заявка не найдена.")
+            return
+
+        if request.assigned_admin_id == admin_id:
+            request.assigned_admin_id = None
+
+        if request.status != "Принято":
+            request.status = "Принято"
+
+        db.commit()
+        logger.info("Администратор %s отказался от заявки %s после уточнения.", admin_id, request.id)
+
+    try:
+        await callback_query.message.delete()
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Не удалось удалить сообщение администратора при отказе: %s", exc)
 
 
 @router.callback_query(F.data.startswith("admin_clarify_start_"))
@@ -173,8 +202,9 @@ async def admin_clarify_end(callback_query: CallbackQuery, state: FSMContext, bo
             await callback_query.message.answer("Заявка не найдена.")
             return
 
-        request.status = "Принято к исполнению"
-        request.assigned_admin_id = request.assigned_admin_id or admin_id
+        request.status = "Принято"
+        if request.assigned_admin_id == admin_id:
+            request.assigned_admin_id = None
         db.commit()
 
         await state.clear()
@@ -205,7 +235,7 @@ async def admin_clarify_end(callback_query: CallbackQuery, state: FSMContext, bo
                 chat_id=callback_query.message.chat.id,
                 message_id=original_admin_message_id,
                 text=callback_query.message.text,
-                reply_markup=get_admin_done_keyboard(request.id),
+                reply_markup=get_admin_post_clarification_keyboard(request.id),
             )
         except Exception as exc:  # noqa: BLE001
             logger.error(
@@ -215,7 +245,10 @@ async def admin_clarify_end(callback_query: CallbackQuery, state: FSMContext, bo
             )
 
     try:
-        await callback_query.message.edit_text("Диалог уточнения завершен. Статус заявки: Принято к исполнению")
+        await callback_query.message.edit_text(
+            "Диалог уточнения завершен. Выберите дальнейшее действие.",
+            reply_markup=get_admin_post_clarification_keyboard(request.id),
+        )
     except Exception as exc:  # noqa: BLE001
         logger.error("Не удалось обновить сообщение администратора при завершении диалога: %s", exc)
 
@@ -239,7 +272,7 @@ async def admin_clarify_end(callback_query: CallbackQuery, state: FSMContext, bo
                 chat_id=callback_query.message.chat.id,
                 message_id=request.admin_message_id,
                 text=request_info,
-                reply_markup=get_admin_done_keyboard(request.id),
+                reply_markup=get_admin_post_clarification_keyboard(request.id),
             )
             logger.info("Сообщение администратору для заявки %s обновлено после завершения диалога.", request.id)
         except Exception as exc:  # noqa: BLE001

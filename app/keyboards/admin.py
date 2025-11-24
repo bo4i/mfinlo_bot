@@ -20,5 +20,8 @@ def get_admin_clarify_active_keyboard(request_id: int) -> InlineKeyboardMarkup:
 
 
 def get_admin_post_clarification_keyboard(request_id: int) -> InlineKeyboardMarkup:
-    buttons = [[InlineKeyboardButton(text="Принять", callback_data=f"admin_accept_{request_id}")]]
+    buttons = [
+        [InlineKeyboardButton(text="Принять", callback_data=f"admin_accept_{request_id}")],
+        [InlineKeyboardButton(text="Отказаться", callback_data=f"admin_decline_{request_id}")],
+    ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
