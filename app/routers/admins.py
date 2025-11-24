@@ -259,23 +259,29 @@ async def show_assigned_requests(message: Message) -> None:
 
         two_days_ago = datetime.now() - timedelta(days=2)
 
-    requests = (
-        db.query(Request)
-        .filter(
-            Request.assigned_admin_id == admin_id,
-            (Request.status != "Выполнено") | (Request.completed_at >= two_days_ago),
+        requests = (
+            db.query(Request)
+            .filter(
+                Request.assigned_admin_id == admin_id,
+                (Request.status != "Выполнено") | (Request.completed_at >= two_days_ago),
+            )
+            .order_by(Request.created_at.desc())
+            .all()
         )
-        .order_by(Request.created_at.desc())
-        .all()
-    )
 
     if not requests:
-        await message.answer("У вас пока нет принятых к исполнению заявок или недавно выполненных.")
+        await message.answer(
+            "У вас пока нет принятых к исполнению заявок или недавно выполненных."
+        )
         return
 
     for req in requests:
         user = db.query(User).filter(User.id == req.user_id).first()
-        user_info = f"{user.full_name}, {user.organization}, {user.phone_number}" if user else "Неизвестный пользователь"
+        user_info = (
+            f"{user.full_name}, {user.organization}, {user.phone_number}"
+            if user
+            else "Неизвестный пользователь"
+        )
         if user and user.office_number:
             user_info += f", каб. {user.office_number}"
 
@@ -294,6 +300,7 @@ async def show_assigned_requests(message: Message) -> None:
             keyboard_to_show = get_admin_done_keyboard(req.id)
         elif req.status == "Уточнение":
             keyboard_to_show = get_admin_clarify_active_keyboard(req.id)
+
             await message.answer(request_text, reply_markup=keyboard_to_show)
 
 
