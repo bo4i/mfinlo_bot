@@ -37,11 +37,11 @@ async def admin_accept_request(callback_query: CallbackQuery, bot: Bot) -> None:
             await callback_query.message.answer(f"Эта заявка уже имеет статус: {request.status}.")
             return
 
-    request.status = "Принято к исполнению"
-    request.assigned_admin_id = admin_id
-    admin_user = db.query(User).filter(User.id == admin_id).first()
-    db.commit()
-    logger.info("Заявка ID:%s принята к исполнению администратором %s.", request.id, admin_id)
+        request.status = "Принято к исполнению"
+        request.assigned_admin_id = admin_id
+        admin_user = db.query(User).filter(User.id == admin_id).first()
+        db.commit()
+        logger.info("Заявка ID:%s принята к исполнению администратором %s.", request.id, admin_id)
 
     try:
         await callback_query.message.edit_text(
@@ -269,29 +269,21 @@ async def show_assigned_requests(message: Message) -> None:
             .all()
         )
 
-    if not requests:
-        await message.answer(
-            "У вас пока нет принятых к исполнению заявок или недавно выполненных."
-        )
-        return
+        if not requests:
+            await message.answer(
+                "У вас пока нет принятых к исполнению заявок или недавно выполненных."
+            )
+            return
 
     for req in requests:
         user = db.query(User).filter(User.id == req.user_id).first()
-        user_info = (
-            f"{user.full_name}, {user.organization}, {user.phone_number}"
+        user_details = (
+            f"📞 Телефон: {user.phone_number}\n🏢 Организация: {user.organization}"
             if user
-            else "Неизвестный пользователь"
+            else "Пользователь не найден"
         )
         if user and user.office_number:
-            user_info += f", каб. {user.office_number}"
-
-        request_text = (
-            f"--- Заявка ID: {req.id} ({req.request_type}) ---\n"
-            f"От: {user_info}\n"
-            f"Описание: {req.description}\n"
-            f"Срочность: {'Как можно скорее' if req.urgency == 'ASAP' else f'К {req.due_date}'}\n"
-            f"Статус: {req.status}"
-        )
+            user_details += f"\n🚪 Кабинет: {user.office_number}"
 
         keyboard_to_show = None
         if req.status == "Принято":
@@ -301,7 +293,15 @@ async def show_assigned_requests(message: Message) -> None:
         elif req.status == "Уточнение":
             keyboard_to_show = get_admin_clarify_active_keyboard(req.id)
 
-            await message.answer(request_text, reply_markup=keyboard_to_show)
+        request_text = (
+            f"🚨 Заявка ({req.request_type}) от {user.full_name if user else 'Неизвестный пользователь'} 🚨\n"
+            f"{user_details}\n"
+            f"📝 Описание: {req.description}\n"
+            f"⏰ Срочность: {'Как можно скорее' if req.urgency == 'ASAP' else f'К {req.due_date}'}\n"
+            f"🆔 Заявка ID: {req.id}\n\n"
+            f"✅ Статус: {req.status}"
+        )
+        await message.answer(request_text, reply_markup=keyboard_to_show)
 
 
 @router.callback_query(F.data.startswith("admin_done_"))
