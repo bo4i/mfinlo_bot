@@ -40,28 +40,31 @@ async def admin_accept_request(callback_query: CallbackQuery, bot: Bot) -> None:
         request.status = "Принято к исполнению"
         request.assigned_admin_id = admin_id
         admin_user = db.query(User).filter(User.id == admin_id).first()
+        admin_full_name = admin_user.full_name if admin_user else "Администратор"
+        request_user_id = request.user_id
+        request_description = request.description or ""
         db.commit()
         logger.info("Заявка ID:%s принята к исполнению администратором %s.", request.id, admin_id)
 
     try:
         await callback_query.message.edit_text(
-            f"{callback_query.message.text}\n\n✅ Статус: Принято к исполнению ({admin_user.full_name if admin_user else 'Администратор'})",
+            f"{callback_query.message.text}\n\n✅ Статус: Принято к исполнению ({admin_full_name})",
             reply_markup=None,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.error("Не удалось обновить сообщение администратору для заявки %s: %s", request.id, exc)
+        logger.error("Не удалось обновить сообщение администратору для заявки %s: %s", request_id, exc)
 
-    user_full_name = admin_user.full_name if admin_user else "Неизвестный администратор"
+    user_full_name = admin_full_name if admin_full_name else "Неизвестный администратор"
     try:
         await bot.send_message(
-            chat_id=request.user_id,
+            chat_id=request_user_id,
             text=(
-                f"Ваша заявка ID:{request.id} ({request.description[:50]}...) принята к исполнению.\n"
+                f"Ваша заявка ID:{request_id} ({request_description[:50]}...) принята к исполнению.\n"
                 f"Исполнитель: {user_full_name}."
             ),
         )
     except Exception as exc:  # noqa: BLE001
-        logger.error("Не удалось уведомить пользователя %s о принятии заявки %s: %s", request.user_id, request.id, exc)
+        logger.error("Не удалось уведомить пользователя %s о принятии заявки %s: %s", request_user_id, request_id, exc)
 
 
 @router.callback_query(F.data.startswith("admin_clarify_start_"))

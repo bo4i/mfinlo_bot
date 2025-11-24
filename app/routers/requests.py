@@ -80,8 +80,10 @@ async def process_urgency_callback(callback_query: CallbackQuery, state: FSMCont
 @router.message(NewRequestStates.waiting_for_date)
 async def process_date(message: Message, state: FSMContext) -> None:
     try:
-        datetime.strptime(message.text, "%Y-%m-%d %H:%M")
-        await state.update_data(due_date=message.text)
+        date_text = message.text.strip() if message.text else ""
+        parsed_date = datetime.strptime(date_text, "%Y-%m-%d %H:%M")
+        normalized_date = parsed_date.strftime("%Y-%m-%d %H:%M")
+        await state.update_data(due_date=normalized_date)
         await save_request(message, state, message.from_user.id, bot=message.bot)
     except ValueError:
         await message.answer(
