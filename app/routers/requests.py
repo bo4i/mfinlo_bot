@@ -8,7 +8,7 @@ from aiogram.types import CallbackQuery, Message
 from app.db import get_db
 from app.db.models import Admin, Request, User
 from app.keyboards.admin import get_admin_new_request_keyboard
-from app.keyboards.main import get_urgency_keyboard
+from app.keyboards.main import get_photo_skip_keyboard, get_urgency_keyboard
 from app.states.requests import NewRequestStates
 
 logger = logging.getLogger(__name__)
@@ -37,8 +37,32 @@ async def process_description(message: Message, state: FSMContext) -> None:
         await message.answer("Пожалуйста, введите описание проблемы текстом.")
         return
     await state.update_data(description=message.text)
-    await message.answer("Как срочно необходимо выполнить заявку?", reply_markup=get_urgency_keyboard())
+    await message.answer(
+        "Прикрепите изображение проблемы (если это необходимо) или нажмите «Пропустить».",
+        reply_markup=get_photo_skip_keyboard(),
+    )
+    await state.set_state(NewRequestStates.waiting_for_photo)
+
+
+@router.message(NewRequestStates.waiting_for_photo, F.photo)
+async def process_photo(message: Message, state: FSMContext) -> None:
+    photo_file_id = message.photo[-1].file_id
+    await state.update_data(photo_file_id=photo_file_id)
+    await message.answer("Изображение прикреплено. Как срочно необходимо выполнить заявку?", reply_markup=get_urgency_keyboard())
     await state.set_state(NewRequestStates.waiting_for_urgency)
+
+
+@router.callback_query(NewRequestStates.waiting_for_photo, F.data == "skip_photo")
+async def skip_photo(callback_query: CallbackQuery, state: FSMContext) -> None:
+    await callback_query.answer("Пропущено")
+    await state.update_data(photo_file_id=None)
+    await callback_query.message.answer("Как срочно необходимо выполнить заявку?", reply_markup=get_urgency_keyboard())
+    await state.set_state(NewRequestStates.waiting_for_urgency)
+
+
+@router.message(NewRequestStates.waiting_for_photo)
+async def handle_unexpected_photo_input(message: Message) -> None:
+    await message.answer("Пожалуйста, отправьте фото или нажмите кнопку «Пропустить».")
 
 
 @router.callback_query(NewRequestStates.waiting_for_urgency, F.data.in_({"urgency_asap", "urgency_date"}))
@@ -69,6 +93,7 @@ async def save_request(message: Message, state: FSMContext, user_id: int, bot: B
     user_data = await state.get_data()
     request_type = user_data.get("request_type")
     description = user_data.get("description")
+    photo_file_id = user_data.get("photo_file_id")
     urgency = user_data.get("urgency")
     due_date = user_data.get("due_date") if urgency == "DATE" else None
 
@@ -84,6 +109,7 @@ async def save_request(message: Message, state: FSMContext, user_id: int, bot: B
             user_id=user_id,
             request_type=request_type,
             description=description,
+            photo_file_id=photo_file_id,
             urgency=urgency,
             due_date=due_date,
             status="Принято",
@@ -118,7 +144,15 @@ async def notify_admins(db_session, request: Request, user: User, bot: Bot) -> N
 
     for admin_id in admin_ids_to_notify:
         try:
-            sent_message = await bot.send_message(chat_id=admin_id, text=request_info, reply_markup=keyboard)
+            if request.photo_file_id:
+                sent_message = await bot.send_photo(
+                    chat_id=admin_id,
+                    photo=request.photo_file_id,
+                    caption=request_info,
+                    reply_markup=keyboard,
+                )
+            else:
+                sent_message = await bot.send_message(chat_id=admin_id, text=request_info, reply_markup=keyboard)
             request.admin_message_id = sent_message.message_id
             db_session.commit()
             logger.info("Уведомление о заявке %s отправлено администратору %s.", request.id, admin_id)

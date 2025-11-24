@@ -32,6 +32,7 @@ class Request(Base):
     description = Column(String)
     urgency = Column(String)
     due_date = Column(String, nullable=True)
+    photo_file_id = Column(String, nullable=True)
     status = Column(String, default="Принято")
     assigned_admin_id = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.now)

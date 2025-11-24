@@ -1,5 +1,6 @@
 import logging
-import datetime
+from datetime import datetime
+from datetime import timedelta
 from aiogram import Bot, F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
@@ -256,7 +257,7 @@ async def show_assigned_requests(message: Message) -> None:
             await message.answer("У вас нет доступа к этой функции.")
             return
 
-        two_days_ago = datetime.now() - datetime.timedelta(days=2)
+        two_days_ago = datetime.now() - timedelta(days=2)
 
     requests = (
         db.query(Request)

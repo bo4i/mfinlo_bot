@@ -23,6 +23,11 @@ def get_urgency_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+def get_photo_skip_keyboard() -> InlineKeyboardMarkup:
+    buttons = [[InlineKeyboardButton(text="Пропустить", callback_data="skip_photo")]]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 def get_organization_selection_keyboard() -> InlineKeyboardMarkup:
     buttons = []
     for i, org in enumerate(PREDEFINED_ORGANIZATIONS):
