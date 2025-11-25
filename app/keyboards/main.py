@@ -40,11 +40,14 @@ def get_organization_selection_keyboard() -> InlineKeyboardMarkup:
 
 def get_aho_issue_keyboard() -> InlineKeyboardMarkup:
     buttons = [
-        [InlineKeyboardButton(text="Заявка на канцтовары", callback_data="aho_issue_supplies")],
-        [InlineKeyboardButton(text="Замена световых ламп", callback_data="aho_issue_lamps")],
-        [InlineKeyboardButton(text="Починка кондиционера", callback_data="aho_issue_aircon")],
-        [InlineKeyboardButton(text="Пользование авто", callback_data="aho_issue_car")],
-        [InlineKeyboardButton(text="Прочее", callback_data="aho_issue_other")],
+        [InlineKeyboardButton(text="1. Заявка на канцтовары", callback_data="aho_issue_supplies")],
+        [InlineKeyboardButton(text="2. Замена световых ламп", callback_data="aho_issue_lamps")],
+        [InlineKeyboardButton(text="3. Починка кондиционера", callback_data="aho_issue_aircon")],
+        [InlineKeyboardButton(text="4. Пользование авто", callback_data="aho_issue_car")],
+        [InlineKeyboardButton(text="5. Заявка хозтовары", callback_data="aho_issue_household")],
+        [InlineKeyboardButton(text="6. Регулировка отопления", callback_data="aho_issue_heating")],
+        [InlineKeyboardButton(text="7. Заявка на мелкие ремонтные работы", callback_data="aho_issue_repairs")],
+        [InlineKeyboardButton(text="8. Прочее", callback_data="aho_issue_other")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 

@@ -29,9 +29,11 @@ async def update_request_prompt(
     message_id: int | None,
     text: str,
     reply_markup=None,
+    *,
+    edit_existing: bool = True,
 ) -> int:
     """Edit an existing prompt message or send a new one if editing fails."""
-    if message_id:
+    if edit_existing and message_id:
         try:
             await bot.edit_message_text(
                 text=text,
@@ -97,7 +99,7 @@ async def _prompt_for_photo(
         bot=bot,
         chat_id=chat_id,
         message_id=prompt_message_id,
-        text="Прикрепите изображение проблемы (если это необходимо) или нажмите «Пропустить».",
+        text="Прикрепите фото или документ (если это необходимо) или нажмите «Пропустить».",
         reply_markup=get_photo_skip_keyboard(),
     )
     await state.update_data(description=description, prompt_message_id=prompt_message_id)
@@ -111,6 +113,7 @@ async def _prompt_for_comment(bot: Bot, chat_id: int, prompt_message_id: int | N
         message_id=prompt_message_id,
         text="Вы можете добавить дополнительный комментарий к заявке или нажмите «Пропустить».",
         reply_markup=get_comment_skip_keyboard(),
+        edit_existing=False,
     )
     await state.update_data(prompt_message_id=prompt_message_id)
     await state.set_state(NewRequestStates.waiting_for_comment)
@@ -162,6 +165,9 @@ async def process_aho_issue_selection(callback_query: CallbackQuery, state: FSMC
         "lamps": "Замена световых ламп",
         "aircon": "Починка кондиционера",
         "car": "Пользование авто",
+        "household": "Заявка хозтовары",
+        "heating": "Регулировка отопления",
+        "repairs": "Заявка на мелкие ремонтные работы",
     }
 
     if selection == "other":
@@ -170,6 +176,7 @@ async def process_aho_issue_selection(callback_query: CallbackQuery, state: FSMC
             chat_id=callback_query.message.chat.id,
             message_id=prompt_message_id,
             text="Опишите проблему для АХО-заявки:",
+            edit_existing=False,
         )
         await state.update_data(prompt_message_id=prompt_message_id)
         await state.set_state(NewRequestStates.waiting_for_description)
@@ -216,6 +223,7 @@ async def process_description(message: Message, state: FSMContext) -> None:
             chat_id=message.chat.id,
             message_id=prompt_message_id,
             text="Пожалуйста, введите описание проблемы текстом.",
+            edit_existing=False,
         )
         return
 
@@ -244,7 +252,9 @@ async def process_car_date_selection(
         text=(
             f"Дата поездки: {formatted_date}\n"
             "Введите время начала поездки в формате ЧЧ:ММ (например, 10:00)."
+
         ),
+        edit_existing=False,
     )
     await state.update_data(car_date=formatted_date, prompt_message_id=prompt_message_id)
     await state.set_state(NewRequestStates.waiting_for_car_time)
@@ -265,6 +275,7 @@ async def process_car_time(message: Message, state: FSMContext) -> None:
             message_id=prompt_message_id,
             text="Произошла ошибка при выборе даты поездки. Пожалуйста, выберите дату снова.",
             reply_markup=calendar_markup,
+            edit_existing=False,
         )
         await state.update_data(prompt_message_id=prompt_message_id)
         await state.set_state(NewRequestStates.waiting_for_car_date)
@@ -279,6 +290,7 @@ async def process_car_time(message: Message, state: FSMContext) -> None:
             chat_id=message.chat.id,
             message_id=prompt_message_id,
             text="Неверный формат времени. Пожалуйста, используйте формат ЧЧ:ММ (например, 10:00).",
+            edit_existing=False,
         )
         await state.update_data(prompt_message_id=prompt_message_id)
         return
@@ -288,6 +300,7 @@ async def process_car_time(message: Message, state: FSMContext) -> None:
         chat_id=message.chat.id,
         message_id=prompt_message_id,
         text="Укажите продолжительность поездки (например, 2 часа).",
+        edit_existing=False,
     )
     await state.update_data(car_time=normalized_time, prompt_message_id=prompt_message_id)
     await state.set_state(NewRequestStates.waiting_for_car_duration)
@@ -307,6 +320,7 @@ async def process_car_duration(message: Message, state: FSMContext) -> None:
             chat_id=message.chat.id,
             message_id=prompt_message_id,
             text="Пожалуйста, укажите продолжительность поездки (например, 2 часа).",
+            edit_existing=False,
         )
         await state.update_data(prompt_message_id=prompt_message_id)
         return
@@ -318,6 +332,7 @@ async def process_car_duration(message: Message, state: FSMContext) -> None:
             chat_id=message.chat.id,
             message_id=prompt_message_id,
             text="Не удалось распознать продолжительность. Укажите её в формате '2 часа' или '1:30'.",
+            edit_existing=False,
         )
         await state.update_data(prompt_message_id=prompt_message_id)
         return
@@ -330,6 +345,7 @@ async def process_car_duration(message: Message, state: FSMContext) -> None:
             chat_id=message.chat.id,
             message_id=prompt_message_id,
             text="Произошла ошибка при определении даты или времени. Пожалуйста, введите время начала снова.",
+            edit_existing=False,
         )
         await state.update_data(prompt_message_id=prompt_message_id)
         await state.set_state(NewRequestStates.waiting_for_car_time)
@@ -353,6 +369,7 @@ async def process_car_duration(message: Message, state: FSMContext) -> None:
                 f"Он занят {busy_date} с {busy_from_time} до {busy_to_time}.\n"
                 "Выберите другое время начала поездки (ЧЧ:ММ)."
             ),
+            edit_existing=False,
         )
         await state.update_data(prompt_message_id=prompt_message_id)
         await state.set_state(NewRequestStates.waiting_for_car_time)
@@ -370,6 +387,7 @@ async def process_car_duration(message: Message, state: FSMContext) -> None:
         chat_id=message.chat.id,
         message_id=prompt_message_id,
         text="Укажите место поездки.",
+        edit_existing=False,
     )
     await state.update_data(prompt_message_id=prompt_message_id)
     await state.set_state(NewRequestStates.waiting_for_car_location)
@@ -392,6 +410,7 @@ async def process_car_duration(message: Message, state: FSMContext) -> None:
                 chat_id=message.chat.id,
                 message_id=prompt_message_id,
                 text="Пожалуйста, укажите место поездки.",
+                edit_existing=False,
             )
             await state.update_data(prompt_message_id=prompt_message_id)
             return
@@ -421,21 +440,36 @@ async def process_car_duration(message: Message, state: FSMContext) -> None:
         await save_request(message, state, message.from_user.id, bot=message.bot)
 
 
-@router.message(NewRequestStates.waiting_for_photo, F.photo)
-async def process_photo(message: Message, state: FSMContext) -> None:
-    photo_file_id = message.photo[-1].file_id
+async def _store_attachment_and_ask_urgency(
+    message: Message, state: FSMContext, file_id: str, attachment_type: str
+) -> None:
     user_data = await state.get_data()
     prompt_message_id = user_data.get("prompt_message_id")
     prompt_message_id = await update_request_prompt(
         bot=message.bot,
         chat_id=message.chat.id,
         message_id=prompt_message_id,
-        text="Изображение прикреплено. Как срочно необходимо выполнить заявку?",
+        text="Файл прикреплён. Как срочно необходимо выполнить заявку?",
         reply_markup=get_urgency_keyboard(),
+        edit_existing=False,
     )
-    await state.update_data(photo_file_id=photo_file_id, prompt_message_id=prompt_message_id)
+    await state.update_data(
+        attachment_file_id=file_id,
+        attachment_type=attachment_type,
+        prompt_message_id=prompt_message_id,
+    )
     await state.set_state(NewRequestStates.waiting_for_urgency)
 
+@router.message(NewRequestStates.waiting_for_photo, F.photo)
+async def process_photo(message: Message, state: FSMContext) -> None:
+    photo_file_id = message.photo[-1].file_id
+    await _store_attachment_and_ask_urgency(message, state, photo_file_id, "photo")
+
+
+@router.message(NewRequestStates.waiting_for_photo, F.document)
+async def process_document(message: Message, state: FSMContext) -> None:
+    document_file_id = message.document.file_id
+    await _store_attachment_and_ask_urgency(message, state, document_file_id, "document")
 
 @router.callback_query(NewRequestStates.waiting_for_photo, F.data == "skip_photo")
 async def skip_photo(callback_query: CallbackQuery, state: FSMContext) -> None:
@@ -449,13 +483,17 @@ async def skip_photo(callback_query: CallbackQuery, state: FSMContext) -> None:
         text="Как срочно необходимо выполнить заявку?",
         reply_markup=get_urgency_keyboard(),
     )
-    await state.update_data(photo_file_id=None, prompt_message_id=prompt_message_id)
+    await state.update_data(
+        attachment_file_id=None,
+        attachment_type=None,
+        prompt_message_id=prompt_message_id,
+    )
     await state.set_state(NewRequestStates.waiting_for_urgency)
 
 
 @router.message(NewRequestStates.waiting_for_photo)
 async def handle_unexpected_photo_input(message: Message) -> None:
-    await message.answer("Пожалуйста, отправьте фото или нажмите кнопку «Пропустить».")
+    await message.answer("Пожалуйста, отправьте фото, документ или нажмите кнопку «Пропустить».")
 
 
 @router.callback_query(NewRequestStates.waiting_for_urgency, F.data.in_({"urgency_asap", "urgency_date"}))
@@ -503,6 +541,7 @@ async def process_date_selection(
             f"Дата: {formatted_date}\n"
             "Введите желаемое время в формате ЧЧ:ММ (например, 10:00)."
         ),
+        edit_existing=False,
     )
     await state.update_data(selected_date=formatted_date, prompt_message_id=prompt_message_id)
     await state.set_state(NewRequestStates.waiting_for_time)
@@ -521,6 +560,7 @@ async def process_time(message: Message, state: FSMContext) -> None:
             chat_id=message.chat.id,
             message_id=prompt_message_id,
             text="Произошла ошибка при выборе даты. Попробуйте выбрать дату снова.",
+            edit_existing=False,
         )
         await state.update_data(prompt_message_id=prompt_message_id)
         await state.set_state(NewRequestStates.waiting_for_urgency)
@@ -537,6 +577,7 @@ async def process_time(message: Message, state: FSMContext) -> None:
             chat_id=message.chat.id,
             message_id=prompt_message_id,
             text="Неверный формат времени. Пожалуйста, используйте формат ЧЧ:ММ (например, 10:00).",
+            edit_existing=False,
         )
         await state.update_data(prompt_message_id=prompt_message_id)
 
@@ -552,6 +593,7 @@ async def process_comment(message: Message, state: FSMContext) -> None:
             message_id=prompt_message_id,
             text="Комментарий должен быть текстом. Введите комментарий или нажмите «Пропустить».",
             reply_markup=get_comment_skip_keyboard(),
+            edit_existing=False,
         )
         return
 
@@ -570,11 +612,16 @@ async def save_request(message: Message, state: FSMContext, user_id: int, bot: B
     user_data = await state.get_data()
     request_type = user_data.get("request_type")
     description = user_data.get("description")
-    photo_file_id = user_data.get("photo_file_id")
+    attachment_file_id = user_data.get("attachment_file_id")
+    attachment_type = user_data.get("attachment_type")
+    photo_file_id = attachment_file_id or user_data.get("photo_file_id")
+    if photo_file_id and not attachment_type:
+        attachment_type = "photo"
     urgency = user_data.get("urgency")
     due_date = user_data.get("due_date") if urgency == "DATE" else None
     prompt_message_id = user_data.get("prompt_message_id")
     comment = user_data.get("comment")
+    attachment_type = attachment_type,
     car_start_at_raw = user_data.get("car_start_at")
     car_end_at_raw = user_data.get("car_end_at")
     car_location = user_data.get("car_location")
@@ -626,6 +673,7 @@ async def save_request(message: Message, state: FSMContext, user_id: int, bot: B
             bot=bot,
             chat_id=message.chat.id,
             message_id=prompt_message_id,
+            edit_existing=False,
             text="Ваша заявка успешно создана и будет рассмотрена.",
         )
         await state.clear()
@@ -656,12 +704,21 @@ async def notify_admins(db_session, request: Request, user: User, bot: Bot) -> N
     for admin_id in admin_ids_to_notify:
         try:
             if request.photo_file_id:
-                sent_message = await bot.send_photo(
-                    chat_id=admin_id,
-                    photo=request.photo_file_id,
-                    caption=request_info,
-                    reply_markup=keyboard,
-                )
+                attachment_type = (request.attachment_type or "photo").lower()
+                if attachment_type == "document":
+                    sent_message = await bot.send_document(
+                        chat_id=admin_id,
+                        document=request.photo_file_id,
+                        caption=request_info,
+                        reply_markup=keyboard,
+                    )
+                else:
+                    sent_message = await bot.send_photo(
+                        chat_id=admin_id,
+                        photo=request.photo_file_id,
+                        caption=request_info,
+                        reply_markup=keyboard,
+                    )
             else:
                 sent_message = await bot.send_message(chat_id=admin_id, text=request_info, reply_markup=keyboard)
             request.admin_message_id = sent_message.message_id
