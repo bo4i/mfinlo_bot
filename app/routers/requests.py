@@ -14,6 +14,7 @@ from app.keyboards.main import (
     get_aho_issue_keyboard,
     get_comment_skip_keyboard,
     get_photo_skip_keyboard,
+    get_request_confirmation_keyboard,
     get_urgency_keyboard,
 )
 from app.states.requests import NewRequestStates
@@ -117,6 +118,39 @@ async def _prompt_for_comment(bot: Bot, chat_id: int, prompt_message_id: int | N
     )
     await state.update_data(prompt_message_id=prompt_message_id)
     await state.set_state(NewRequestStates.waiting_for_comment)
+
+
+async def _prompt_for_confirmation(bot: Bot, chat_id: int, state: FSMContext) -> None:
+    user_data = await state.get_data()
+    prompt_message_id = user_data.get("prompt_message_id")
+    request_type = user_data.get("request_type", "")
+    description = user_data.get("description", "")
+    urgency = user_data.get("urgency")
+    due_date = user_data.get("due_date")
+    comment = user_data.get("comment")
+
+    urgency_text = "Как можно скорее" if urgency == "ASAP" else f"К {due_date}" if due_date else "Не указана"
+    request_name = "ИТ" if request_type == "IT" else "АХО" if request_type == "AHO" else ""
+
+    summary_lines = [
+        "Проверьте данные заявки:",
+        f"Тип: {request_name}",
+        f"Описание: {description}",
+        f"Срочность: {urgency_text}",
+    ]
+    summary_lines.append(f"Комментарий: {comment}" if comment else "Комментарий: отсутствует")
+    summary_lines.append("Отправить заявку?")
+
+    prompt_message_id = await update_request_prompt(
+        bot=bot,
+        chat_id=chat_id,
+        message_id=prompt_message_id,
+        text="\n".join(summary_lines),
+        reply_markup=get_request_confirmation_keyboard(),
+        edit_existing=False,
+    )
+    await state.update_data(prompt_message_id=prompt_message_id)
+    await state.set_state(NewRequestStates.waiting_for_confirmation)
 
 
 
@@ -437,7 +471,7 @@ async def process_car_duration(message: Message, state: FSMContext) -> None:
             urgency="DATE",
             due_date=car_start_formatted,
         )
-        await save_request(message, state, message.from_user.id, bot=message.bot)
+        await _prompt_for_confirmation(message.bot, message.chat.id, state)
 
 
 async def _store_attachment_and_ask_urgency(
@@ -598,14 +632,35 @@ async def process_comment(message: Message, state: FSMContext) -> None:
         return
 
     await state.update_data(comment=message.text)
-    await save_request(message, state, message.from_user.id, bot=message.bot)
+    await _prompt_for_confirmation(message.bot, message.chat.id, state)
 
 
 @router.callback_query(NewRequestStates.waiting_for_comment, F.data == "skip_comment")
 async def skip_comment(callback_query: CallbackQuery, state: FSMContext) -> None:
     await callback_query.answer("Пропущено")
     await state.update_data(comment=None)
+    await _prompt_for_confirmation(callback_query.bot, callback_query.message.chat.id, state)
+
+
+@router.callback_query(NewRequestStates.waiting_for_confirmation, F.data == "confirm_request")
+async def confirm_request(callback_query: CallbackQuery, state: FSMContext) -> None:
+    await callback_query.answer("Заявка отправляется")
     await save_request(callback_query.message, state, callback_query.from_user.id, bot=callback_query.bot)
+
+
+@router.callback_query(NewRequestStates.waiting_for_confirmation, F.data == "cancel_request")
+async def cancel_request(callback_query: CallbackQuery, state: FSMContext) -> None:
+    await callback_query.answer("Заявка отменена")
+    user_data = await state.get_data()
+    prompt_message_id = user_data.get("prompt_message_id")
+    await update_request_prompt(
+        bot=callback_query.bot,
+        chat_id=callback_query.message.chat.id,
+        message_id=prompt_message_id,
+        text="Создание заявки отменено. Вы можете начать заново с помощью команды /start.",
+        reply_markup=None,
+    )
+    await state.clear()
 
 
 async def save_request(message: Message, state: FSMContext, user_id: int, bot: Bot) -> None:

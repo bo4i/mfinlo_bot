@@ -56,3 +56,11 @@ def get_aho_issue_keyboard() -> InlineKeyboardMarkup:
 def get_comment_skip_keyboard() -> InlineKeyboardMarkup:
     buttons = [[InlineKeyboardButton(text="Пропустить", callback_data="skip_comment")]]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_request_confirmation_keyboard() -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text="Подтвердить", callback_data="confirm_request")],
+        [InlineKeyboardButton(text="Отменить", callback_data="cancel_request")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)

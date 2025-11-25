@@ -9,9 +9,9 @@ from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
 
 from app.db import get_db
 from app.db.models import Request, User
-from app.keyboards.admin import get_admin_clarify_active_reply_keyboard
+from app.keyboards.admin import get_admin_clarify_active_keyboard
 from app.keyboards.main import get_main_menu_keyboard
-from app.keyboards.user import get_user_clarify_active_reply_keyboard, get_user_request_actions_keyboard
+from app.keyboards.user import get_user_clarify_active_keyboard, get_user_request_actions_keyboard
 from app.states.clarification import ClarificationState
 
 logger = logging.getLogger(__name__)
@@ -243,14 +243,14 @@ async def user_clarify_start(callback_query: CallbackQuery, state: FSMContext, b
                     f" ({request.description[:50] if request else '...'}).\n"
                     "Вы можете отправлять сообщения в ответ."
                 ),
-                reply_markup=get_admin_clarify_active_reply_keyboard(),
+                reply_markup=get_admin_clarify_active_keyboard(request.id),
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("Не удалось уведомить администратора %s о начале диалога уточнения: %s", request.assigned_admin_id, exc)
 
     await callback_query.message.answer(
         "Вы начали диалог уточнения с администратором. Отправляйте сообщения. Для завершения диалога нажмите кнопку:",
-        reply_markup=get_user_clarify_active_reply_keyboard(),
+        reply_markup=get_user_clarify_active_keyboard(request_id),
     )
 
 
@@ -288,6 +288,7 @@ async def process_user_clarification_message(message: Message, state: FSMContext
                 f" по заявке ID:{request.id} ({request.description[:50] if request else '...'})\n\n"
                 f"{message.text}"
             ),
+            reply_markup=get_admin_clarify_active_keyboard(request.id),
         )
     except Exception as exc:  # noqa: BLE001
         await message.answer("Не удалось отправить сообщение администратору. Возможно, он заблокировал бота.")

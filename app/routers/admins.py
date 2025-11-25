@@ -11,13 +11,12 @@ from app.db import get_db
 from app.db.models import Request, User
 from app.keyboards.admin import (
     get_admin_clarify_active_keyboard,
-    get_admin_clarify_active_reply_keyboard,
     get_admin_done_keyboard,
     get_admin_new_request_keyboard,
     get_admin_post_clarification_keyboard,
 )
 from app.keyboards.main import get_main_menu_keyboard
-from app.keyboards.user import get_user_clarify_active_reply_keyboard
+from app.keyboards.user import get_user_clarify_active_keyboard
 from app.states.clarification import ClarificationState
 
 logger = logging.getLogger(__name__)
@@ -308,14 +307,14 @@ async def admin_clarify_start(callback_query: CallbackQuery, state: FSMContext, 
                     f"Администратор начал диалог по вашей заявке ID:{request.id} ({request.description[:50]}...).\n"
                     "Вы можете отправлять сообщения в ответ."
                 ),
-                reply_markup=get_user_clarify_active_reply_keyboard(),
+                reply_markup=get_user_clarify_active_keyboard(request.id),
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("Не удалось уведомить пользователя %s о начале диалога уточнения: %s", request.user_id, exc)
 
     await callback_query.message.answer(
         "Вы начали диалог уточнения с пользователем. Отправляйте сообщения. Для завершения диалога нажмите кнопку:",
-        reply_markup=get_admin_clarify_active_reply_keyboard(),
+        reply_markup=get_admin_clarify_active_keyboard(request_id),
     )
 
 
@@ -352,6 +351,7 @@ async def process_admin_clarification_message(message: Message, state: FSMContex
                     f"💬 От администратора по заявке ID:{request.id} ({request.description[:50] if request else '...'})\n\n"
                     f"{message.text}"
                 ),
+                reply_markup=get_user_clarify_active_keyboard(request.id),
             )
         except Exception as exc:  # noqa: BLE001
             await message.answer("Не удалось отправить сообщение пользователю. Возможно, он заблокировал бота.")
