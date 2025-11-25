@@ -136,14 +136,19 @@ async def process_aho_issue_selection(callback_query: CallbackQuery, state: FSMC
         return
 
     if selection == "car":
+        calendar_markup = await SimpleCalendar().start_calendar()
         prompt_message_id = await update_request_prompt(
             bot=callback_query.bot,
             chat_id=callback_query.message.chat.id,
             message_id=prompt_message_id,
-            text="Для заявки на пользование авто укажите дату, время начала и продолжительность выезда.",
+            text="Выберите дату поездки на авто:",
+            reply_markup=calendar_markup,
         )
-        await state.update_data(description=issue_descriptions.get(selection, ""), prompt_message_id=prompt_message_id)
-        await state.set_state(NewRequestStates.waiting_for_car_details)
+        await state.update_data(
+            description=issue_descriptions.get(selection, ""),
+            prompt_message_id=prompt_message_id,
+        )
+        await state.set_state(NewRequestStates.waiting_for_car_date)
         return
 
     description = issue_descriptions.get(selection)
@@ -179,24 +184,101 @@ async def process_description(message: Message, state: FSMContext) -> None:
     await _prompt_for_photo(message.bot, message.chat.id, prompt_message_id, state, message.text)
 
 
-@router.message(NewRequestStates.waiting_for_car_details)
-async def process_car_details(message: Message, state: FSMContext) -> None:
-    details_text = (message.text or "").strip()
+@router.callback_query(NewRequestStates.waiting_for_car_date, SimpleCalendarCallback.filter())
+async def process_car_date_selection(
+    callback_query: CallbackQuery, callback_data: SimpleCalendarCallback, state: FSMContext
+) -> None:
+    selected, selected_date = await SimpleCalendar().process_selection(callback_query, callback_data)
+
+    if not selected:
+        return
+
+    await callback_query.answer()
+    formatted_date = selected_date.strftime("%Y-%m-%d")
     user_data = await state.get_data()
     prompt_message_id = user_data.get("prompt_message_id")
-    base_description = user_data.get("description", "Пользование авто")
+    prompt_message_id = await update_request_prompt(
+        bot=callback_query.bot,
+        chat_id=callback_query.message.chat.id,
+        message_id=prompt_message_id,
+        text=(
+            f"Дата поездки: {formatted_date}\n"
+            "Введите время начала поездки в формате ЧЧ:ММ (например, 10:00)."
+        ),
+    )
+    await state.update_data(car_date=formatted_date, prompt_message_id=prompt_message_id)
+    await state.set_state(NewRequestStates.waiting_for_car_time)
 
-    if not details_text:
+
+@router.message(NewRequestStates.waiting_for_car_time)
+async def process_car_time(message: Message, state: FSMContext) -> None:
+    time_text = (message.text or "").strip()
+    user_data = await state.get_data()
+    prompt_message_id = user_data.get("prompt_message_id")
+    car_date = user_data.get("car_date")
+
+    if not car_date:
+        calendar_markup = await SimpleCalendar().start_calendar()
         prompt_message_id = await update_request_prompt(
             bot=message.bot,
             chat_id=message.chat.id,
             message_id=prompt_message_id,
-            text="Пожалуйста, укажите дату, время начала и продолжительность выезда для заявки на авто.",
+            text="Произошла ошибка при выборе даты поездки. Пожалуйста, выберите дату снова.",
+            reply_markup=calendar_markup,
+        )
+        await state.update_data(prompt_message_id=prompt_message_id)
+        await state.set_state(NewRequestStates.waiting_for_car_date)
+        return
+
+    try:
+        parsed_time = datetime.strptime(time_text, "%H:%M")
+        normalized_time = parsed_time.strftime("%H:%M")
+    except ValueError:
+        prompt_message_id = await update_request_prompt(
+            bot=message.bot,
+            chat_id=message.chat.id,
+            message_id=prompt_message_id,
+            text="Неверный формат времени. Пожалуйста, используйте формат ЧЧ:ММ (например, 10:00).",
         )
         await state.update_data(prompt_message_id=prompt_message_id)
         return
 
-    description = f"{base_description}. {details_text}"
+    prompt_message_id = await update_request_prompt(
+        bot=message.bot,
+        chat_id=message.chat.id,
+        message_id=prompt_message_id,
+        text="Укажите продолжительность поездки (например, 2 часа).",
+    )
+    await state.update_data(car_time=normalized_time, prompt_message_id=prompt_message_id)
+    await state.set_state(NewRequestStates.waiting_for_car_duration)
+
+
+@router.message(NewRequestStates.waiting_for_car_duration)
+async def process_car_duration(message: Message, state: FSMContext) -> None:
+    duration_text = (message.text or "").strip()
+    user_data = await state.get_data()
+    prompt_message_id = user_data.get("prompt_message_id")
+    base_description = user_data.get("description", "Пользование авто")
+    car_date = user_data.get("car_date")
+    car_time = user_data.get("car_time")
+    if not duration_text:
+        prompt_message_id = await update_request_prompt(
+            bot=message.bot,
+            chat_id=message.chat.id,
+            message_id=prompt_message_id,
+            text="Пожалуйста, укажите продолжительность поездки (например, 2 часа).",
+        )
+        await state.update_data(prompt_message_id=prompt_message_id)
+        return
+
+    details = []
+    if car_date:
+        details.append(f"Дата: {car_date}")
+    if car_time:
+        details.append(f"время: {car_time}")
+    details.append(f"продолжительность: {duration_text}")
+
+    description = f"{base_description}. {'; '.join(details)}."
     await _prompt_for_photo(message.bot, message.chat.id, prompt_message_id, state, description)
 
 
