@@ -5,16 +5,95 @@ from aiogram import Bot, F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
 
 from app.db import get_db
 from app.db.models import Request, User
-from app.keyboards.user import get_user_clarify_active_keyboard, get_user_request_actions_keyboard
+from app.keyboards.admin import get_admin_clarify_active_reply_keyboard
+from app.keyboards.user import get_user_clarify_active_reply_keyboard, get_user_request_actions_keyboard
 from app.states.clarification import ClarificationState
 
 logger = logging.getLogger(__name__)
 
 router = Router()
+
+
+async def finish_user_clarification(
+    *,
+    state: FSMContext,
+    bot: Bot,
+    user_chat_id: int,
+    request_id: int | None = None,
+) -> None:
+    state_data = await state.get_data()
+    if request_id is None:
+        request_id = state_data.get("request_id")
+
+    target_admin_id = state_data.get("target_admin_id")
+    original_user_message_id = state_data.get("original_user_message_id")
+
+    if not request_id:
+        await bot.send_message(
+            chat_id=user_chat_id,
+            text="Заявка не найдена. Попробуйте начать диалог заново или используйте /start.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        await state.clear()
+        return
+
+    with get_db() as db:
+        request = db.query(Request).filter(Request.id == request_id).first()
+
+        if not request:
+            await bot.send_message(
+                chat_id=user_chat_id,
+                text="Заявка не найдена.",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            await state.clear()
+            return
+
+    await state.clear()
+    await bot.send_message(
+        chat_id=user_chat_id,
+        text="Диалог уточнения завершен.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+    if target_admin_id:
+        admin_state = FSMContext(
+            storage=state.storage,
+            key=StorageKey(bot_id=bot.id, chat_id=target_admin_id, user_id=target_admin_id),
+        )
+        admin_state_data = await admin_state.get_data()
+        current_admin_state = await admin_state.get_state()
+        if current_admin_state == ClarificationState.admin_active_dialogue and admin_state_data.get("request_id") == request_id:
+            await admin_state.clear()
+            logger.info("Состояние администратора %s очищено после завершения диалога пользователем.", target_admin_id)
+            try:
+                await bot.send_message(
+                    chat_id=target_admin_id,
+                    text=(
+                        f"Диалог по заявке ID:{request.id} ({request.description[:50] if request else '...'}) завершен пользователем."
+                    ),
+                    reply_markup=ReplyKeyboardRemove(),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Не удалось уведомить администратора %s о завершении диалога: %s", target_admin_id, exc)
+
+    if original_user_message_id:
+        try:
+            await bot.edit_message_reply_markup(
+                chat_id=user_chat_id,
+                message_id=original_user_message_id,
+                reply_markup=None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "Не удалось обновить сообщение пользователя после завершения диалога для заявки %s: %s",
+                request_id,
+                exc,
+            )
 
 
 @router.message(F.text == "Мои заявки")
@@ -155,19 +234,28 @@ async def user_clarify_start(callback_query: CallbackQuery, state: FSMContext, b
                     f" ({request.description[:50] if request else '...'}).\n"
                     "Вы можете отправлять сообщения в ответ."
                 ),
+                reply_markup=get_admin_clarify_active_reply_keyboard(),
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("Не удалось уведомить администратора %s о начале диалога уточнения: %s", request.assigned_admin_id, exc)
 
     await callback_query.message.answer(
         "Вы начали диалог уточнения с администратором. Отправляйте сообщения. Для завершения диалога нажмите кнопку:",
-        reply_markup=get_user_clarify_active_keyboard(request_id),
+        reply_markup=get_user_clarify_active_reply_keyboard(),
     )
 
 
 @router.message(StateFilter(ClarificationState.user_active_dialogue))
 async def process_user_clarification_message(message: Message, state: FSMContext, bot: Bot) -> None:
     if not message.text:
+        return
+
+    if message.text == "Завершить уточнение":
+        await finish_user_clarification(
+            state=state,
+            bot=bot,
+            user_chat_id=message.chat.id,
+        )
         return
 
     state_data = await state.get_data()
@@ -207,50 +295,18 @@ async def user_clarify_end(callback_query: CallbackQuery, state: FSMContext, bot
     await callback_query.answer()
     request_id = int(callback_query.data.split("_")[3])
 
-    state_data = await state.get_data()
-    target_admin_id = state_data.get("target_admin_id")
-    original_user_message_id = state_data.get("original_user_message_id")
+    await finish_user_clarification(
+        state=state,
+        bot=bot,
+        user_chat_id=callback_query.message.chat.id,
+        request_id=request_id,
+    )
 
-    with get_db() as db:
-        request = db.query(Request).filter(Request.id == request_id).first()
 
-        if not request:
-            await callback_query.message.answer("Заявка не найдена.")
-            return
-
-    await state.clear()
-    await callback_query.message.answer("Диалог уточнения завершен.")
-
-    if target_admin_id:
-        admin_state = FSMContext(
-            storage=state.storage,
-            key=StorageKey(bot_id=bot.id, chat_id=target_admin_id, user_id=target_admin_id),
-        )
-        admin_state_data = await admin_state.get_data()
-        current_admin_state = await admin_state.get_state()
-        if current_admin_state == ClarificationState.admin_active_dialogue and admin_state_data.get("request_id") == request_id:
-            await admin_state.clear()
-            logger.info("Состояние администратора %s очищено после завершения диалога пользователем.", target_admin_id)
-            try:
-                await bot.send_message(
-                    chat_id=target_admin_id,
-                    text=(
-                        f"Диалог по заявке ID:{request.id} ({request.description[:50] if request else '...'}) завершен пользователем."
-                    ),
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.error("Не удалось уведомить администратора %s о завершении диалога: %s", target_admin_id, exc)
-
-    if original_user_message_id:
-        try:
-            await bot.edit_message_reply_markup(
-                chat_id=callback_query.message.chat.id,
-                message_id=original_user_message_id,
-                reply_markup=None,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.error(
-                "Не удалось обновить сообщение пользователя после завершения диалога для заявки %s: %s",
-                request.id,
-                exc,
-            )
+@router.message(StateFilter(ClarificationState.user_active_dialogue), F.text == "Завершить уточнение")
+async def user_clarify_end_message(message: Message, state: FSMContext, bot: Bot) -> None:
+    await finish_user_clarification(
+        state=state,
+        bot=bot,
+        user_chat_id=message.chat.id,
+    )

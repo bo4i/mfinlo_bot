@@ -693,7 +693,7 @@ async def notify_admins(db_session, request: Request, user: User, bot: Bot) -> N
     comment_block = f"\n💬 Комментарий: {request.comment}" if request.comment else ""
 
     request_info = (
-        f"🚨 Новая заявка ({request.request_type}) от {user.full_name} 🚨\n"
+        f"🚨 Новая заявка от {user.full_name} 🚨\n"
         f"{user_details}\n"
         f"📝 Описание: {request.description}\n"
         f"⏰ Срочность: {'Как можно скорее' if request.urgency == 'ASAP' else f'К {request.due_date}'}{comment_block}\n"

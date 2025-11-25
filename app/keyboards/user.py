@@ -1,4 +1,4 @@
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
 
 def get_user_request_actions_keyboard(request_id: int, status: str) -> InlineKeyboardMarkup:
@@ -12,3 +12,8 @@ def get_user_request_actions_keyboard(request_id: int, status: str) -> InlineKey
 def get_user_clarify_active_keyboard(request_id: int) -> InlineKeyboardMarkup:
     buttons = [[InlineKeyboardButton(text="Завершить уточнение", callback_data=f"user_clarify_end_{request_id}")]]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_user_clarify_active_reply_keyboard() -> ReplyKeyboardMarkup:
+    buttons = [[KeyboardButton(text="Завершить уточнение")]]
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
