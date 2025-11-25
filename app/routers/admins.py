@@ -229,11 +229,12 @@ async def admin_clarify_end(callback_query: CallbackQuery, state: FSMContext, bo
             user_full_name = user_creator.full_name
         else:
             user_full_name = "Неизвестный пользователь"
-            urgency_text = (
-                "Как можно скорее"
-                if request_data["urgency"] == "ASAP"
-                else f"К {request_data['due_date']}"
-            )
+
+        urgency_text = (
+            "Как можно скорее"
+            if request_data["urgency"] == "ASAP"
+            else f"К {request_data['due_date']}"
+        )
 
         request_info = (
             f"🚨 Заявка ({request_data['request_type']}) от {user_full_name} 🚨\n"
