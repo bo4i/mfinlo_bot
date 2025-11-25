@@ -39,6 +39,9 @@ class Request(Base):
     completed_at = Column(DateTime, nullable=True)
     admin_message_id = Column(Integer, nullable=True)
     comment = Column(String, nullable=True)
+    car_start_at = Column(DateTime, nullable=True)
+    car_end_at = Column(DateTime, nullable=True)
+    car_location = Column(String, nullable=True)
 
     creator = relationship("User", back_populates="requests")
 

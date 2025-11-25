@@ -1,5 +1,6 @@
 import logging
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 
 from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
@@ -44,6 +45,45 @@ async def update_request_prompt(
 
     sent_message = await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
     return sent_message.message_id
+
+
+def _parse_duration_minutes(duration_text: str) -> int | None:
+    sanitized = duration_text.strip().lower()
+    if not sanitized:
+        return None
+
+    time_match = re.match(r"^(?P<hours>\d{1,2})\s*[:.]\s*(?P<minutes>\d{1,2})$", sanitized)
+    if time_match:
+        hours = int(time_match.group("hours"))
+        minutes = int(time_match.group("minutes"))
+        return hours * 60 + minutes
+
+    number_match = re.search(r"(\d+(?:[.,]\d+)?)", sanitized)
+    if not number_match:
+        return None
+
+    number_value = float(number_match.group(1).replace(",", "."))
+
+    if "час" in sanitized or "ч" in sanitized:
+        return int(number_value * 60)
+    if "мин" in sanitized:
+        return int(number_value)
+    return int(number_value * 60)
+
+
+def _find_overlapping_car_request(db_session, start_at: datetime, end_at: datetime) -> Request | None:
+    return (
+        db_session.query(Request)
+        .filter(
+            Request.request_type == "AHO",
+            Request.car_start_at.isnot(None),
+            Request.car_end_at.isnot(None),
+            Request.car_start_at < end_at,
+            Request.car_end_at > start_at,
+        )
+        .order_by(Request.car_start_at)
+        .first()
+    )
 
 
 async def _prompt_for_photo(
@@ -271,15 +311,114 @@ async def process_car_duration(message: Message, state: FSMContext) -> None:
         await state.update_data(prompt_message_id=prompt_message_id)
         return
 
-    details = []
-    if car_date:
-        details.append(f"Дата: {car_date}")
-    if car_time:
-        details.append(f"время: {car_time}")
-    details.append(f"продолжительность: {duration_text}")
+    duration_minutes = _parse_duration_minutes(duration_text)
+    if duration_minutes is None or duration_minutes <= 0:
+        prompt_message_id = await update_request_prompt(
+            bot=message.bot,
+            chat_id=message.chat.id,
+            message_id=prompt_message_id,
+            text="Не удалось распознать продолжительность. Укажите её в формате '2 часа' или '1:30'.",
+        )
+        await state.update_data(prompt_message_id=prompt_message_id)
+        return
 
-    description = f"{base_description}. {'; '.join(details)}."
-    await _prompt_for_photo(message.bot, message.chat.id, prompt_message_id, state, description)
+    try:
+        start_datetime = datetime.strptime(f"{car_date} {car_time}", "%Y-%m-%d %H:%M")
+    except (TypeError, ValueError):
+        prompt_message_id = await update_request_prompt(
+            bot=message.bot,
+            chat_id=message.chat.id,
+            message_id=prompt_message_id,
+            text="Произошла ошибка при определении даты или времени. Пожалуйста, введите время начала снова.",
+        )
+        await state.update_data(prompt_message_id=prompt_message_id)
+        await state.set_state(NewRequestStates.waiting_for_car_time)
+        return
+
+    end_datetime = start_datetime + timedelta(minutes=duration_minutes)
+
+    with get_db() as db:
+        overlapping_request = _find_overlapping_car_request(db, start_datetime, end_datetime)
+
+    if overlapping_request:
+        busy_date = overlapping_request.car_start_at.strftime("%d-%m")
+        busy_from_time = overlapping_request.car_start_at.strftime("%H:%M")
+        busy_to_time = overlapping_request.car_end_at.strftime("%H:%M")
+        prompt_message_id = await update_request_prompt(
+            bot=message.bot,
+            chat_id=message.chat.id,
+            message_id=prompt_message_id,
+            text=(
+                "Автомобиль уже забронирован на это время. "
+                f"Он занят {busy_date} с {busy_from_time} до {busy_to_time}.\n"
+                "Выберите другое время начала поездки (ЧЧ:ММ)."
+            ),
+        )
+        await state.update_data(prompt_message_id=prompt_message_id)
+        await state.set_state(NewRequestStates.waiting_for_car_time)
+        return
+
+    await state.update_data(
+        car_duration_text=duration_text,
+        car_duration_minutes=duration_minutes,
+        car_start_at=start_datetime.isoformat(),
+        car_end_at=end_datetime.isoformat(),
+    )
+
+    prompt_message_id = await update_request_prompt(
+        bot=message.bot,
+        chat_id=message.chat.id,
+        message_id=prompt_message_id,
+        text="Укажите место поездки.",
+    )
+    await state.update_data(prompt_message_id=prompt_message_id)
+    await state.set_state(NewRequestStates.waiting_for_car_location)
+
+
+    @router.message(NewRequestStates.waiting_for_car_location)
+    async def process_car_location(message: Message, state: FSMContext) -> None:
+        location_text = (message.text or "").strip()
+        user_data = await state.get_data()
+        prompt_message_id = user_data.get("prompt_message_id")
+        car_date = user_data.get("car_date")
+        car_time = user_data.get("car_time")
+        duration_text = user_data.get("car_duration_text")
+        car_start_at = user_data.get("car_start_at")
+        base_description = user_data.get("description", "Пользование авто")
+
+        if not location_text:
+            prompt_message_id = await update_request_prompt(
+                bot=message.bot,
+                chat_id=message.chat.id,
+                message_id=prompt_message_id,
+                text="Пожалуйста, укажите место поездки.",
+            )
+            await state.update_data(prompt_message_id=prompt_message_id)
+            return
+
+        details = []
+        if car_date:
+            details.append(f"Дата: {car_date}")
+        if car_time:
+            details.append(f"время: {car_time}")
+        if duration_text:
+            details.append(f"продолжительность: {duration_text}")
+        details.append(f"место: {location_text}")
+
+        description = f"{base_description}. {'; '.join(details)}."
+        car_start_formatted = None
+        if car_start_at:
+            try:
+                car_start_formatted = datetime.fromisoformat(car_start_at).strftime("%Y-%m-%d %H:%M")
+            except ValueError:
+                car_start_formatted = car_start_at
+        await state.update_data(
+            description=description,
+            car_location=location_text,
+            urgency="DATE",
+            due_date=car_start_formatted,
+        )
+        await save_request(message, state, message.from_user.id, bot=message.bot)
 
 
 @router.message(NewRequestStates.waiting_for_photo, F.photo)
@@ -436,6 +575,22 @@ async def save_request(message: Message, state: FSMContext, user_id: int, bot: B
     due_date = user_data.get("due_date") if urgency == "DATE" else None
     prompt_message_id = user_data.get("prompt_message_id")
     comment = user_data.get("comment")
+    car_start_at_raw = user_data.get("car_start_at")
+    car_end_at_raw = user_data.get("car_end_at")
+    car_location = user_data.get("car_location")
+
+    car_start_at = None
+    car_end_at = None
+    if car_start_at_raw:
+        try:
+            car_start_at = datetime.fromisoformat(car_start_at_raw)
+        except ValueError:
+            car_start_at = None
+    if car_end_at_raw:
+        try:
+            car_end_at = datetime.fromisoformat(car_end_at_raw)
+        except ValueError:
+            car_end_at = None
 
     with get_db() as db:
         user = db.query(User).filter(User.id == user_id).first()
@@ -459,6 +614,9 @@ async def save_request(message: Message, state: FSMContext, user_id: int, bot: B
             due_date=due_date,
             status="Принято",
             comment=comment,
+            car_start_at=car_start_at,
+            car_end_at=car_end_at,
+            car_location=car_location,
         )
         db.add(new_request)
         db.commit()

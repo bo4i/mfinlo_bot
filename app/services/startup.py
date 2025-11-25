@@ -65,6 +65,9 @@ def _ensure_request_columns_exist() -> None:
     required_columns = {
         "photo_file_id": "VARCHAR",
         "comment": "VARCHAR",
+        "car_start_at": "TIMESTAMP",
+        "car_end_at": "TIMESTAMP",
+        "car_location": "VARCHAR",
     }
     try:
         with engine.connect() as connection:
