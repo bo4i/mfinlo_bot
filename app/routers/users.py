@@ -10,6 +10,7 @@ from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
 from app.db import get_db
 from app.db.models import Request, User
 from app.keyboards.admin import get_admin_clarify_active_reply_keyboard
+from app.keyboards.main import get_main_menu_keyboard
 from app.keyboards.user import get_user_clarify_active_reply_keyboard, get_user_request_actions_keyboard
 from app.states.clarification import ClarificationState
 
@@ -41,14 +42,22 @@ async def finish_user_clarification(
         await state.clear()
         return
 
+    user_role = "user"
+    admin_user = None
     with get_db() as db:
         request = db.query(Request).filter(Request.id == request_id).first()
+        user = db.query(User).filter(User.id == user_chat_id).first()
+
+        if user and user.role:
+            user_role = user.role
+        if target_admin_id:
+            admin_user = db.query(User).filter(User.id == target_admin_id).first()
 
         if not request:
             await bot.send_message(
                 chat_id=user_chat_id,
                 text="Заявка не найдена.",
-                reply_markup=ReplyKeyboardRemove(),
+                reply_markup=get_main_menu_keyboard(user_role),
             )
             await state.clear()
             return
@@ -57,7 +66,7 @@ async def finish_user_clarification(
     await bot.send_message(
         chat_id=user_chat_id,
         text="Диалог уточнения завершен.",
-        reply_markup=ReplyKeyboardRemove(),
+        reply_markup=get_main_menu_keyboard(admin_user.role if admin_user else "user"),
     )
 
     if target_admin_id:

@@ -16,6 +16,7 @@ from app.keyboards.admin import (
     get_admin_new_request_keyboard,
     get_admin_post_clarification_keyboard,
 )
+from app.keyboards.main import get_main_menu_keyboard
 from app.keyboards.user import get_user_clarify_active_reply_keyboard
 from app.states.clarification import ClarificationState
 
@@ -49,8 +50,11 @@ async def finish_admin_clarification(
         await state.clear()
         return
 
+    admin_role = "user"
+    user_role = "user"
     with get_db() as db:
         request = db.query(Request).filter(Request.id == request_id).first()
+        admin_user = db.query(User).filter(User.id == admin_id).first()
 
         if not request:
             await bot.send_message(
@@ -86,6 +90,8 @@ async def finish_admin_clarification(
             if user_creator.office_number:
                 user_details += f"\n🚪 Кабинет: {user_creator.office_number}"
             user_full_name = user_creator.full_name
+            if user_creator.role:
+                user_role = user_creator.role
         else:
             user_full_name = "Неизвестный пользователь"
 
@@ -103,6 +109,8 @@ async def finish_admin_clarification(
             f"🆔 Заявка ID: {request_data['id']}\n\n"
             f"✅ Статус: {request_data['status']}"
         )
+        if admin_user and admin_user.role:
+            admin_role = admin_user.role
 
     if target_user_id:
         user_state = FSMContext(
@@ -122,7 +130,7 @@ async def finish_admin_clarification(
                         f"Диалог по заявке ID:{request_data['id']} ({request_data['description'][:50] if request_data else '...'}) "
                         "завершен администратором."
                     ),
-                    reply_markup=ReplyKeyboardRemove(),
+                    reply_markup=get_main_menu_keyboard(user_role),
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.error(
@@ -135,7 +143,7 @@ async def finish_admin_clarification(
         await bot.send_message(
             chat_id=admin_chat_id,
             text="Диалог уточнения завершен.",
-            reply_markup=ReplyKeyboardRemove(),
+            reply_markup=get_main_menu_keyboard(admin_role),
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("Не удалось отправить сообщение об окончании диалога администратору: %s", exc)
