@@ -446,6 +446,61 @@ async def show_assigned_requests(message: Message) -> None:
         await message.answer(request_text, reply_markup=keyboard_to_show)
 
 
+@router.message(F.text == "Новые заявки")
+async def show_new_requests(message: Message) -> None:
+    admin_id = message.from_user.id
+    with get_db() as db:
+        admin_user = db.query(User).filter(User.id == admin_id).first()
+
+        if not admin_user or admin_user.role not in ["it_admin", "aho_admin"]:
+            await message.answer("У вас нет доступа к этой функции.")
+            return
+
+        request_type_filter = "IT" if admin_user.role == "it_admin" else "AHO"
+
+        requests = (
+            db.query(Request)
+            .filter(
+                Request.request_type == request_type_filter,
+                Request.status.notin_(["Выполнено", "Принято к исполнению"]),
+            )
+            .order_by(Request.created_at.desc())
+            .all()
+        )
+
+        if not requests:
+            await message.answer("Новых заявок нет.")
+            return
+
+        for req in requests:
+            user = db.query(User).filter(User.id == req.user_id).first()
+            user_details = (
+                f"📞 Телефон: {user.phone_number}\n🏢 Организация: {user.organization}"
+                if user
+                else "Пользователь не найден"
+            )
+            if user and user.office_number:
+                user_details += f"\n🚪 Кабинет: {user.office_number}"
+
+            keyboard_to_show = None
+            if req.status == "Принято":
+                keyboard_to_show = get_admin_new_request_keyboard(req.id)
+            elif req.status == "Принято к исполнению":
+                keyboard_to_show = get_admin_done_keyboard(req.id)
+            elif req.status == "Уточнение":
+                keyboard_to_show = get_admin_clarify_active_keyboard(req.id)
+
+            request_text = (
+                f"🚨 Заявка ({req.request_type}) от {user.full_name if user else 'Неизвестный пользователь'} 🚨\n"
+                f"{user_details}\n"
+                f"📝 Описание: {req.description}\n"
+                f"⏰ Срочность: {'Как можно скорее' if req.urgency == 'ASAP' else f'К {req.due_date}'}\n"
+                f"🆔 Заявка ID: {req.id}\n\n"
+                f"✅ Статус: {req.status}"
+            )
+            await message.answer(request_text, reply_markup=keyboard_to_show)
+
+
 @router.callback_query(F.data.startswith("admin_done_"))
 async def admin_done_request(callback_query: CallbackQuery, bot: Bot) -> None:
     await callback_query.answer()

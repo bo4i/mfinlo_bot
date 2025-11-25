@@ -11,6 +11,7 @@ def get_main_menu_keyboard(user_role: str) -> ReplyKeyboardMarkup:
     if user_role == "user":
         keyboard.append([KeyboardButton(text="Мои заявки")])
     elif user_role in ["it_admin", "aho_admin"]:
+        keyboard.append([KeyboardButton(text="Новые заявки")])
         keyboard.append(
             [KeyboardButton(text="Мои заявки"), KeyboardButton(text="Мои принятые заявки")]
         )
