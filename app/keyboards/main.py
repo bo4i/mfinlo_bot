@@ -36,3 +36,19 @@ def get_organization_selection_keyboard() -> InlineKeyboardMarkup:
         buttons.append([InlineKeyboardButton(text=org, callback_data=f"org_idx_{i}")])
     buttons.append([InlineKeyboardButton(text="Указать название самостоятельно", callback_data="org_other")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_aho_issue_keyboard() -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text="Заявка на канцтовары", callback_data="aho_issue_supplies")],
+        [InlineKeyboardButton(text="Замена световых ламп", callback_data="aho_issue_lamps")],
+        [InlineKeyboardButton(text="Починка кондиционера", callback_data="aho_issue_aircon")],
+        [InlineKeyboardButton(text="Пользование авто", callback_data="aho_issue_car")],
+        [InlineKeyboardButton(text="Прочее", callback_data="aho_issue_other")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_comment_skip_keyboard() -> InlineKeyboardMarkup:
+    buttons = [[InlineKeyboardButton(text="Пропустить", callback_data="skip_comment")]]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)

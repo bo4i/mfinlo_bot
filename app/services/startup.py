@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 async def on_startup(dispatcher: Dispatcher, bot: Bot) -> None:
-    _ensure_photo_column_exists()
+    _ensure_request_columns_exist()
 
     with get_db() as db:
         for admin_id in IT_ADMIN_IDS:
@@ -51,7 +51,7 @@ async def on_startup(dispatcher: Dispatcher, bot: Bot) -> None:
                         phone_number="N/A",
                         organization="N/A",
                     )
-            )
+                )
             elif user_exists.role != "aho_admin":
                 user_exists.role = "aho_admin"
                 user_exists.registered = True
@@ -61,13 +61,18 @@ async def on_startup(dispatcher: Dispatcher, bot: Bot) -> None:
     logger.info("Администраторы успешно инициализированы в БД.")
 
 
-def _ensure_photo_column_exists() -> None:
+def _ensure_request_columns_exist() -> None:
+    required_columns = {
+        "photo_file_id": "VARCHAR",
+        "comment": "VARCHAR",
+    }
     try:
         with engine.connect() as connection:
             inspector = inspect(connection)
-            columns = [column["name"] for column in inspector.get_columns("requests")]
-            if "photo_file_id" not in columns:
-                connection.execute(text("ALTER TABLE requests ADD COLUMN photo_file_id VARCHAR"))
-                logging.info("Столбец photo_file_id добавлен в таблицу requests.")
+            existing_columns = {column["name"] for column in inspector.get_columns("requests")}
+            for column_name, column_type in required_columns.items():
+                if column_name not in existing_columns:
+                    connection.execute(text(f"ALTER TABLE requests ADD COLUMN {column_name} {column_type}"))
+                    logging.info("Столбец %s добавлен в таблицу requests.", column_name)
     except OperationalError as exc:  # noqa: BLE001
         logging.error("Не удалось изменить структуру таблицы requests: %s", exc)

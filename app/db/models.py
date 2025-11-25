@@ -38,6 +38,7 @@ class Request(Base):
     created_at = Column(DateTime, default=datetime.now)
     completed_at = Column(DateTime, nullable=True)
     admin_message_id = Column(Integer, nullable=True)
+    comment = Column(String, nullable=True)
 
     creator = relationship("User", back_populates="requests")
 
