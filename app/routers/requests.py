@@ -621,7 +621,7 @@ async def save_request(message: Message, state: FSMContext, user_id: int, bot: B
     due_date = user_data.get("due_date") if urgency == "DATE" else None
     prompt_message_id = user_data.get("prompt_message_id")
     comment = user_data.get("comment")
-    attachment_type = attachment_type,
+    attachment_type = attachment_type
     car_start_at_raw = user_data.get("car_start_at")
     car_end_at_raw = user_data.get("car_end_at")
     car_location = user_data.get("car_location")
@@ -657,6 +657,7 @@ async def save_request(message: Message, state: FSMContext, user_id: int, bot: B
             request_type=request_type,
             description=description,
             photo_file_id=photo_file_id,
+            attachment_type=attachment_type,
             urgency=urgency,
             due_date=due_date,
             status="Принято",
