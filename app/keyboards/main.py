@@ -49,6 +49,7 @@ def get_aho_issue_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="6. Регулировка отопления", callback_data="aho_issue_heating")],
         [InlineKeyboardButton(text="7. Заявка на мелкие ремонтные работы", callback_data="aho_issue_repairs")],
         [InlineKeyboardButton(text="8. Прочее", callback_data="aho_issue_other")],
+        [InlineKeyboardButton(text="Назад", callback_data="aho_issue_cancel")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 

@@ -3,6 +3,7 @@ import re
 from datetime import datetime, timedelta
 
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from aiogram_calendar import SimpleCalendar, SimpleCalendarCallback
@@ -59,6 +60,17 @@ async def update_request_prompt(
             if track_message:
                 await _track_temporary_message(state, message_id)
             return message_id
+        except TelegramBadRequest as exc:
+            error_text = str(exc)
+            if "message is not modified" in error_text:
+                logger.debug(
+                    "Сообщение %s не изменилось при попытке редактирования, пропускаем обновление",
+                    message_id,
+                )
+                if track_message:
+                    await _track_temporary_message(state, message_id)
+                return message_id
+            logger.warning("Не удалось отредактировать сообщение %s: %s", message_id, exc)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Не удалось отредактировать сообщение %s: %s", message_id, exc)
 
@@ -508,8 +520,7 @@ async def process_aho_issue_selection(callback_query: CallbackQuery, state: FSMC
             bot=callback_query.bot,
             chat_id=callback_query.message.chat.id,
             message_id=prompt_message_id,
-            text="Не удалось определить выбранный тип заявки. Пожалуйста, попробуйте снова.",
-            reply_markup=get_aho_issue_keyboard(),
+            text="Создание заявки отменено. Вы можете начать заново с помощью команды /start.",
             state=state,
         )
         await state.update_data(prompt_message_id=prompt_message_id)
@@ -561,6 +572,17 @@ async def process_aho_issue_selection(callback_query: CallbackQuery, state: FSMC
         await state.set_state(NewRequestStates.waiting_for_description)
         return
     await _prompt_for_photo(callback_query.bot, callback_query.message.chat.id, prompt_message_id, state, description)
+
+
+@router.callback_query(NewRequestStates.choosing_aho_issue, F.data == "aho_issue_cancel")
+async def cancel_aho_issue_selection(callback_query: CallbackQuery, state: FSMContext) -> None:
+    await callback_query.answer("Отмена")
+    await callback_query.bot.send_message(
+        chat_id=callback_query.message.chat.id,
+        text="Создание заявки отменено. Вы можете начать заново с помощью команды /start.",
+    )
+    await _cleanup_request_messages(callback_query.bot, callback_query.message.chat.id, state)
+    await state.clear()
 
 
 @router.callback_query(NewRequestStates.choosing_aho_issue, F.data == "back_to_aho_issue")
