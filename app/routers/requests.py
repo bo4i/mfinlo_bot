@@ -372,60 +372,21 @@ async def process_subcategory_selection(callback_query: CallbackQuery, state: FS
         )
         return
 
-    calendar_markup = await SimpleCalendar().start_calendar()
-    prompt_message_id = await update_request_prompt(
-        bot=callback_query.bot,
-        chat_id=callback_query.message.chat.id,
-        message_id=prompt_message_id,
-        text=(
-            f"Категория: {user_data.get('category_name', '')}\n"
-            f"Подкатегория: {subcategory.name}\n"
-            "Выберите дату исполнения заявки:"
-        ),
-        reply_markup=calendar_markup,
-    )
+    description = f"{user_data.get('category_name', '')} - {subcategory.name}"
     await state.update_data(
         prompt_message_id=prompt_message_id,
         subcategory_id=subcategory_id,
         subcategory_name=subcategory.name,
-        description=f"{user_data.get('category_name', '')} - {subcategory.name}",
+        description=description,
     )
-    await state.set_state(NewRequestStates.waiting_for_planned_date)
-
-
-@router.callback_query(NewRequestStates.waiting_for_planned_date, SimpleCalendarCallback.filter())
-async def process_planned_date_selection(
-        callback_query: CallbackQuery, callback_data: SimpleCalendarCallback, state: FSMContext
-) -> None:
-    selected, selected_date = await SimpleCalendar().process_selection(callback_query, callback_data)
-
-    if not selected:
-        return
-
-    await callback_query.answer()
-    formatted_date = selected_date.strftime("%Y-%m-%d")
-    user_data = await state.get_data()
-    prompt_message_id = user_data.get("prompt_message_id")
-
-    prompt_message_id = await update_request_prompt(
-        bot=callback_query.bot,
-        chat_id=callback_query.message.chat.id,
-        message_id=prompt_message_id,
-        text=(
-            f"Дата исполнения: {formatted_date}\n"
-            "Вы можете добавить дополнительный комментарий или нажмите «Пропустить»."
-        ),
-        reply_markup=get_comment_skip_keyboard(),
-        edit_existing=False,
+    await _prompt_for_photo(
+        callback_query.bot,
+        callback_query.message.chat.id,
+        prompt_message_id,
+        state,
+        description,
     )
 
-    await state.update_data(
-        prompt_message_id=prompt_message_id,
-        planned_date=formatted_date,
-        due_date=formatted_date,
-        urgency="DATE",
-    )
-    await state.set_state(NewRequestStates.waiting_for_comment)
 
 @router.callback_query(NewRequestStates.choosing_aho_issue, F.data.startswith("aho_issue_"))
 async def process_aho_issue_selection(callback_query: CallbackQuery, state: FSMContext) -> None:
