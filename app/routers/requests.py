@@ -18,6 +18,7 @@ from app.keyboards.main import (
     get_urgency_keyboard,
 )
 from app.states.requests import NewRequestStates
+from app.services.categories import ensure_categories_exist
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +231,7 @@ async def start_new_request(message: Message, state: FSMContext) -> None:
         return
 
     with get_db() as db:
+        ensure_categories_exist(db)
         categories = _get_sorted_categories(db)
 
     prompt_message_id = await update_request_prompt(
