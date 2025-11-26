@@ -20,19 +20,34 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
+def _get_user_guide_text() -> str:
+    return (
+        "👋 Добро пожаловать в бота поддержки!\n\n"
+        "Как пользоваться: \n"
+        "1) Зарегистрируйтесь — укажите ФИО, рабочий телефон для связи и организацию.\n"
+        "2) В главном меню выберите тип заявки: ИТ или АХО.\n"
+        "3) Опишите проблему, при необходимости приложите фото и выберите срочность.\n"
+        "4) Подтвердите заявку — мы будем оповещать вас об изменениях в этом чате.\n"
+        "5) Используйте кнопку ‘Мои заявки’, чтобы посмотреть историю и детали обращений."
+    )
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
     with get_db() as db:
         user = db.query(User).filter(User.id == message.from_user.id).first()
+        show_user_manual = False
 
         if not user:
-            new_user = User(id=message.from_user.id)
+            new_user = User(id=message.from_user.id, user_guide_shown=True)
             db.add(new_user)
             try:
                 db.commit()
                 db.refresh(new_user)
+                user = new_user
                 logger.info("Новый пользователь %s добавлен в БД.", message.from_user.id)
+                show_user_manual = True
             except IntegrityError:
                 db.rollback()
                 logger.warning(
@@ -43,11 +58,29 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
                 if not user:
                     await message.answer("Произошла ошибка при инициализации пользователя. Попробуйте еще раз.")
                     return
+                if not user.user_guide_shown:
+                        user.user_guide_shown = True
+                        db.commit()
+                        show_user_manual = True
+        elif not user.user_guide_shown:
+            user.user_guide_shown = True
+            db.commit()
+            show_user_manual = True
 
-            await message.answer("Добро пожаловать! Для использования бота необходимо зарегистрироваться. Укажите ваше ФИО:")
-            await state.set_state(RegistrationStates.waiting_for_full_name)
-        elif not user.registered:
-            await message.answer("Вы не завершили регистрацию. Пожалуйста, укажите ваше ФИО:")
+            if show_user_manual:
+                await message.answer(_get_user_guide_text())
+
+            if not user:
+                await message.answer("Произошла ошибка при инициализации пользователя. Попробуйте еще раз.")
+                return
+
+            if not user.registered:
+                prompt_text = (
+                    "Добро пожаловать! Для использования бота необходимо зарегистрироваться. Укажите ваше ФИО:"
+                    if show_user_manual
+                    else "Вы не завершили регистрацию. Пожалуйста, укажите ваше ФИО:"
+                )
+                await message.answer(prompt_text)
             await state.set_state(RegistrationStates.waiting_for_full_name)
         else:
             await message.answer("С возвращением! Главное меню:", reply_markup=get_main_menu_keyboard(user.role))

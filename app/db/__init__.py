@@ -15,14 +15,27 @@ def _migrate_schema() -> None:
     inspector = inspect(engine)
 
     if "categories" in inspector.get_table_names():
-        existing_columns = {column["name"] for column in inspector.get_columns("categories")}
-        if "request_type" not in existing_columns:
+        category_columns = {column["name"] for column in inspector.get_columns("categories")}
+        if "request_type" not in category_columns:
             with engine.begin() as connection:
                 connection.execute(text("ALTER TABLE categories ADD COLUMN request_type VARCHAR"))
                 connection.execute(
                     text("UPDATE categories SET request_type = 'IT' WHERE request_type IS NULL")
                 )
 
+
+    if "users" in inspector.get_table_names():
+        user_columns = {column["name"] for column in inspector.get_columns("users")}
+        if "user_guide_shown" not in user_columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text("ALTER TABLE users ADD COLUMN user_guide_shown BOOLEAN DEFAULT 0")
+                )
+                connection.execute(
+                    text(
+                        "UPDATE users SET user_guide_shown = 1 WHERE registered = 1 AND user_guide_shown IS NULL"
+                    )
+                )
 
 @contextmanager
 def get_db() -> Generator[Session, None, None]:

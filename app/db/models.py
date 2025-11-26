@@ -15,6 +15,7 @@ class User(Base):
     organization = Column(String, nullable=True)
     office_number = Column(String, nullable=True)
     registered = Column(Boolean, default=False)
+    user_guide_shown = Column(Boolean, default=False)
     role = Column(String, default="user")
 
     requests = relationship("Request", back_populates="creator")
