@@ -53,6 +53,15 @@ def get_aho_issue_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+def get_aho_other_subcategory_keyboard() -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text="Уборка кабинета", callback_data="aho_other_cleaning")],
+        [InlineKeyboardButton(text="Указать самостоятельно", callback_data="aho_other_custom")],
+        [InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_aho_issue")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 def get_comment_skip_keyboard() -> InlineKeyboardMarkup:
     buttons = [[InlineKeyboardButton(text="Пропустить", callback_data="skip_comment")]]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
