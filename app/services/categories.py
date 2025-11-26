@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from sqlalchemy.orm import Session
 
@@ -62,30 +62,62 @@ CATEGORIES_STRUCTURE: Mapping[str, Iterable[str]] = {
 }
 
 
+AHO_CATEGORIES_STRUCTURE: Mapping[str, Iterable[str]] = {
+    "Заявка на канцтовары": ["Перечень канцтоваров"],
+    "Замена световых ламп": ["Замена световых ламп"],
+    "Починка кондиционера": ["Починка кондиционера"],
+    "Пользование авто": ["Пользование авто"],
+    "Заявка хозтовары": ["Перечень хозтоваров"],
+    "Регулировка отопления": ["Регулировка отопления"],
+    "Заявка на мелкие ремонтные работы": ["Описание работ"],
+    "Прочее": ["Уборка кабинета", "Указать самостоятельно"],
+}
+
+
+def _seed_categories(structure: Mapping[str, Iterable[str]], request_type: str, session: Session) -> None:
+    for category_name, subcategories in structure.items():
+        category = (
+            session.query(Category)
+            .filter(Category.name == category_name, Category.request_type == request_type)
+            .first()
+        )
+        if not category:
+            category = Category(name=category_name, request_type=request_type)
+            session.add(category)
+            session.flush()
+        elif category.request_type != request_type:
+            category.request_type = request_type
+
+        for subcategory_name in subcategories:
+            subcategory_exists = (
+                session.query(Subcategory)
+                .filter(Subcategory.name == subcategory_name, Subcategory.category_id == category.id)
+                .first()
+            )
+            if not subcategory_exists:
+                session.add(Subcategory(name=subcategory_name, category_id=category.id))
+
+    session.commit()
+
+
 def ensure_categories_exist(db: Session | None = None) -> None:
     """Populate the database with the default IT categories and subcategories."""
 
     def _seed(session: Session) -> None:
-        for category_name, subcategories in CATEGORIES_STRUCTURE.items():
-            category = session.query(Category).filter(Category.name == category_name).first()
-            if not category:
-                category = Category(name=category_name)
-                session.add(category)
-                session.flush()
+        _seed_categories(CATEGORIES_STRUCTURE, "IT", session)
 
-            for subcategory_name in subcategories:
-                subcategory_exists = (
-                    session.query(Subcategory)
-                    .filter(
-                        Subcategory.name == subcategory_name,
-                        Subcategory.category_id == category.id,
-                    )
-                    .first()
-                )
-                if not subcategory_exists:
-                    session.add(Subcategory(name=subcategory_name, category_id=category.id))
+    if db is not None:
+        _seed(db)
+        return
 
-        session.commit()
+    with get_db() as db_session:
+        _seed(db_session)
+
+def ensure_aho_categories_exist(db: Session | None = None) -> None:
+    """Populate the database with the default AHO categories and subcategories."""
+
+    def _seed(session: Session) -> None:
+        _seed_categories(AHO_CATEGORIES_STRUCTURE, "AHO", session)
 
     if db is not None:
         _seed(db)

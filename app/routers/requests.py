@@ -12,15 +12,13 @@ from app.db import get_db
 from app.db.models import Admin, Category, Request, Subcategory, User
 from app.keyboards.admin import get_admin_new_request_keyboard
 from app.keyboards.main import (
-    get_aho_issue_keyboard,
-    get_aho_other_subcategory_keyboard,
     get_comment_skip_keyboard,
     get_photo_skip_keyboard,
     get_request_confirmation_keyboard,
     get_urgency_keyboard,
 )
 from app.states.requests import NewRequestStates
-from app.services.categories import ensure_categories_exist
+from app.services.categories import ensure_aho_categories_exist, ensure_categories_exist
 
 logger = logging.getLogger(__name__)
 
@@ -133,12 +131,12 @@ def _find_overlapping_car_request(db_session, start_at: datetime, end_at: dateti
     )
 
 
-def _get_sorted_categories(db_session) -> list[Category]:
-    return (
-        db_session.query(Category)
-        .order_by(Category.request_count.desc(), Category.name.asc())
-        .all()
-    )
+def _get_sorted_categories(db_session, request_type: str = "IT") -> list[Category]:
+    query = db_session.query(Category)
+    if request_type:
+        query = query.filter(Category.request_type == request_type)
+
+    return query.order_by(Category.request_count.desc(), Category.name.asc()).all()
 
 
 def _get_sorted_subcategories(db_session, category_id: int) -> list[Subcategory]:
@@ -170,6 +168,37 @@ def _build_subcategories_keyboard(subcategories: list[Subcategory], category_id:
         for idx, subcategory in enumerate(subcategories)
     ]
     buttons.append([InlineKeyboardButton(text="Назад", callback_data=f"back_to_cat_{category_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def _build_aho_categories_keyboard(categories: list[Category]) -> InlineKeyboardMarkup:
+    buttons = [
+        [
+            InlineKeyboardButton(
+                text=f"{idx + 1}. {category.name}", callback_data=f"aho_cat_{category.id}"
+            )
+        ]
+        for idx, category in enumerate(categories)
+    ]
+    buttons.append([InlineKeyboardButton(text="Назад", callback_data="aho_category_cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def _build_aho_subcategories_keyboard(
+    subcategories: list[Subcategory], category_id: int
+) -> InlineKeyboardMarkup:
+    buttons = [
+        [
+            InlineKeyboardButton(
+                text=f"{idx + 1}. {subcategory.name}",
+                callback_data=f"aho_sub_{subcategory.id}",
+            )
+        ]
+        for idx, subcategory in enumerate(subcategories)
+    ]
+    buttons.append(
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_aho_categories")]
+    )
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -292,16 +321,20 @@ async def start_new_request(message: Message, state: FSMContext) -> None:
     )
 
     if request_type == "AHO":
+        with get_db() as db:
+            ensure_aho_categories_exist(db)
+            categories = _get_sorted_categories(db, request_type="AHO")
+
         prompt_message_id = await update_request_prompt(
             bot=message.bot,
             chat_id=message.chat.id,
             message_id=None,
-            text="Выберите тип проблемы для АХО-заявки:",
-            reply_markup=get_aho_issue_keyboard(),
+            text="Выберите категорию АХО-заявки:",
+            reply_markup=_build_aho_categories_keyboard(categories),
             state=state,
         )
-        await state.update_data(prompt_message_id=prompt_message_id)
-        await state.set_state(NewRequestStates.choosing_aho_issue)
+        await state.update_data(prompt_message_id=prompt_message_id, comment_required=False)
+        await state.set_state(NewRequestStates.choosing_aho_category)
         return
 
     with get_db() as db:
@@ -352,7 +385,11 @@ async def process_category_selection(callback_query: CallbackQuery, state: FSMCo
         return
 
     with get_db() as db:
-        category = db.query(Category).filter(Category.id == category_id).first()
+        category = (
+            db.query(Category)
+            .filter(Category.id == category_id, Category.request_type == "IT")
+            .first()
+        )
         if not category:
             await update_request_prompt(
                 bot=callback_query.bot,
@@ -468,36 +505,172 @@ async def process_subcategory_selection(callback_query: CallbackQuery, state: FS
     )
 
 
-@router.callback_query(NewRequestStates.choosing_aho_issue, F.data.startswith("aho_issue_"))
-async def process_aho_issue_selection(callback_query: CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(NewRequestStates.choosing_aho_category, F.data == "aho_category_cancel")
+async def cancel_aho_category_selection(callback_query: CallbackQuery, state: FSMContext) -> None:
+    await callback_query.answer("Отмена")
+    await callback_query.bot.send_message(
+        chat_id=callback_query.message.chat.id,
+        text="Создание заявки отменено. Вы можете начать заново с помощью команды /start.",
+    )
+    await _cleanup_request_messages(callback_query.bot, callback_query.message.chat.id, state)
+    await state.clear()
+
+
+@router.callback_query(NewRequestStates.choosing_aho_category, F.data.startswith("aho_cat_"))
+async def process_aho_category_selection(callback_query: CallbackQuery, state: FSMContext) -> None:
     await callback_query.answer()
-    selection = callback_query.data.replace("aho_issue_", "")
     user_data = await state.get_data()
     prompt_message_id = user_data.get("prompt_message_id")
+    try:
+        category_id = int(callback_query.data.replace("aho_cat_", ""))
+    except ValueError:
+        await update_request_prompt(
+            bot=callback_query.bot,
+            chat_id=callback_query.message.chat.id,
+            message_id=prompt_message_id,
+            text="Не удалось определить категорию. Попробуйте снова.",
+            edit_existing=False,
+            state=state,
+        )
+        return
 
-    issue_descriptions = {
-        "supplies": "Заявка на канцтовары",
-        "lamps": "Замена световых ламп",
-        "aircon": "Починка кондиционера",
-        "car": "Пользование авто",
-        "household": "Заявка хозтовары",
-        "heating": "Регулировка отопления",
-        "repairs": "Заявка на мелкие ремонтные работы",
-    }
+    with get_db() as db:
+        category = (
+            db.query(Category)
+            .filter(Category.id == category_id, Category.request_type == "AHO")
+            .first()
+        )
+        if not category:
+            categories = _get_sorted_categories(db, request_type="AHO")
+            prompt_message_id = await update_request_prompt(
+                bot=callback_query.bot,
+                chat_id=callback_query.message.chat.id,
+                message_id=prompt_message_id,
+                text="Категория не найдена. Попробуйте выбрать заново.",
+                reply_markup=_build_aho_categories_keyboard(categories),
+                edit_existing=False,
+                state=state,
+            )
+            await state.update_data(prompt_message_id=prompt_message_id)
+            return
 
-    if selection == "other":
+        subcategories = _get_sorted_subcategories(db, category_id)
+
+    if not subcategories:
+        with get_db() as db:
+            categories = _get_sorted_categories(db, request_type="AHO")
         prompt_message_id = await update_request_prompt(
             bot=callback_query.bot,
             chat_id=callback_query.message.chat.id,
             message_id=prompt_message_id,
-            text="Выберите подкатегорию для раздела «Прочее»:",
-            reply_markup=get_aho_other_subcategory_keyboard(),
+            text="Для выбранной категории пока нет подкатегорий. Попробуйте выбрать другую категорию.",
+            reply_markup=_build_aho_categories_keyboard(categories),
+            edit_existing=False,
             state=state,
         )
-        await state.update_data(prompt_message_id=prompt_message_id, base_issue="Прочее", comment_required=False)
+        await state.update_data(prompt_message_id=prompt_message_id)
         return
 
-    if selection == "car":
+    prompt_message_id = await update_request_prompt(
+        bot=callback_query.bot,
+        chat_id=callback_query.message.chat.id,
+        message_id=prompt_message_id,
+        text=f"Категория: {category.name}\nВыберите подкатегорию:",
+        reply_markup=_build_aho_subcategories_keyboard(subcategories, category_id),
+        state=state,
+    )
+    await state.update_data(
+        prompt_message_id=prompt_message_id,
+        category_id=category_id,
+        category_name=category.name,
+    )
+    await state.set_state(NewRequestStates.choosing_aho_subcategory)
+
+
+@router.callback_query(NewRequestStates.choosing_aho_subcategory, F.data == "back_to_aho_categories")
+async def back_to_aho_categories(callback_query: CallbackQuery, state: FSMContext) -> None:
+    await callback_query.answer()
+    user_data = await state.get_data()
+    prompt_message_id = user_data.get("prompt_message_id")
+    with get_db() as db:
+        categories = _get_sorted_categories(db, request_type="AHO")
+
+    prompt_message_id = await update_request_prompt(
+        bot=callback_query.bot,
+        chat_id=callback_query.message.chat.id,
+        message_id=prompt_message_id,
+        text="Выберите категорию АХО-заявки:",
+        reply_markup=_build_aho_categories_keyboard(categories),
+        state=state,
+    )
+    await state.update_data(prompt_message_id=prompt_message_id, comment_required=False)
+    await state.set_state(NewRequestStates.choosing_aho_category)
+
+
+@router.callback_query(NewRequestStates.choosing_aho_subcategory, F.data.startswith("aho_sub_"))
+async def process_aho_subcategory_selection(callback_query: CallbackQuery, state: FSMContext) -> None:
+    await callback_query.answer()
+    user_data = await state.get_data()
+    prompt_message_id = user_data.get("prompt_message_id")
+    category_id = user_data.get("category_id")
+
+    try:
+        subcategory_id = int(callback_query.data.replace("aho_sub_", ""))
+    except ValueError:
+        await update_request_prompt(
+            bot=callback_query.bot,
+            chat_id=callback_query.message.chat.id,
+            message_id=prompt_message_id,
+            text="Не удалось определить подкатегорию. Попробуйте снова.",
+            edit_existing=False,
+            state=state,
+        )
+        return
+
+    with get_db() as db:
+        category = (
+            db.query(Category)
+            .filter(Category.id == category_id, Category.request_type == "AHO")
+            .first()
+        )
+        subcategory = (
+            db.query(Subcategory)
+            .filter(Subcategory.id == subcategory_id, Subcategory.category_id == category_id)
+            .first()
+        )
+        if not category or not subcategory:
+            categories = _get_sorted_categories(db, request_type="AHO")
+            prompt_message_id = await update_request_prompt(
+                bot=callback_query.bot,
+                chat_id=callback_query.message.chat.id,
+                message_id=prompt_message_id,
+                text="Категория или подкатегория не найдены. Попробуйте выбрать заново.",
+                reply_markup=_build_aho_categories_keyboard(categories),
+                edit_existing=False,
+                state=state,
+            )
+            await state.update_data(prompt_message_id=prompt_message_id)
+            await state.set_state(NewRequestStates.choosing_aho_category)
+            return
+
+    if subcategory.name and subcategory.name != category.name:
+        description = f"{category.name} - {subcategory.name}"
+    else:
+        description = category.name
+    await state.update_data(
+        prompt_message_id=prompt_message_id,
+        category_id=category_id,
+        category_name=category.name,
+        subcategory_id=subcategory_id,
+        subcategory_name=subcategory.name,
+        description=description,
+        comment_required=False,
+    )
+
+    category_name = (category.name or "").lower()
+    subcategory_name = (subcategory.name or "").lower()
+
+    if category_name == "пользование авто":
         calendar_markup = await SimpleCalendar().start_calendar()
         prompt_message_id = await update_request_prompt(
             bot=callback_query.bot,
@@ -507,26 +680,11 @@ async def process_aho_issue_selection(callback_query: CallbackQuery, state: FSMC
             reply_markup=calendar_markup,
             state=state,
         )
-        await state.update_data(
-            description=issue_descriptions.get(selection, ""),
-            prompt_message_id=prompt_message_id,
-        )
+        await state.update_data(prompt_message_id=prompt_message_id, comment_required=False)
         await state.set_state(NewRequestStates.waiting_for_car_date)
         return
 
-    description = issue_descriptions.get(selection)
-    if not description:
-        prompt_message_id = await update_request_prompt(
-            bot=callback_query.bot,
-            chat_id=callback_query.message.chat.id,
-            message_id=prompt_message_id,
-            text="Создание заявки отменено. Вы можете начать заново с помощью команды /start.",
-            state=state,
-        )
-        await state.update_data(prompt_message_id=prompt_message_id)
-        return
-
-    if selection == "supplies":
+    if category_name == "заявка на канцтовары":
         await _prompt_for_photo(
             callback_query.bot,
             callback_query.message.chat.id,
@@ -541,7 +699,7 @@ async def process_aho_issue_selection(callback_query: CallbackQuery, state: FSMC
         )
         return
 
-    if selection == "household":
+    if category_name == "заявка хозтовары":
         await _prompt_for_photo(
             callback_query.bot,
             callback_query.message.chat.id,
@@ -556,7 +714,7 @@ async def process_aho_issue_selection(callback_query: CallbackQuery, state: FSMC
         )
         return
 
-    if selection == "repairs":
+    if category_name == "заявка на мелкие ремонтные работы":
         prompt_message_id = await update_request_prompt(
             bot=callback_query.bot,
             chat_id=callback_query.message.chat.id,
@@ -571,64 +729,23 @@ async def process_aho_issue_selection(callback_query: CallbackQuery, state: FSMC
         await state.update_data(base_issue=description, prompt_message_id=prompt_message_id)
         await state.set_state(NewRequestStates.waiting_for_description)
         return
-    await _prompt_for_photo(callback_query.bot, callback_query.message.chat.id, prompt_message_id, state, description)
 
+    if category_name == "прочее":
+        if subcategory_name == "уборка кабинета":
+            await state.update_data(comment_required=True)
+            await _prompt_for_photo(
+                callback_query.bot,
+                callback_query.message.chat.id,
+                prompt_message_id,
+                state,
+                description,
+                prompt_text=(
+                    "Прикрепите фото или документ при необходимости (это необязательно). "
+                    "После этого укажем срочность выполнения."
+                ),
+            )
+            return
 
-@router.callback_query(NewRequestStates.choosing_aho_issue, F.data == "aho_issue_cancel")
-async def cancel_aho_issue_selection(callback_query: CallbackQuery, state: FSMContext) -> None:
-    await callback_query.answer("Отмена")
-    await callback_query.bot.send_message(
-        chat_id=callback_query.message.chat.id,
-        text="Создание заявки отменено. Вы можете начать заново с помощью команды /start.",
-    )
-    await _cleanup_request_messages(callback_query.bot, callback_query.message.chat.id, state)
-    await state.clear()
-
-
-@router.callback_query(NewRequestStates.choosing_aho_issue, F.data == "back_to_aho_issue")
-async def back_to_aho_issue_selection(callback_query: CallbackQuery, state: FSMContext) -> None:
-    await callback_query.answer()
-    user_data = await state.get_data()
-    prompt_message_id = user_data.get("prompt_message_id")
-    prompt_message_id = await update_request_prompt(
-        bot=callback_query.bot,
-        chat_id=callback_query.message.chat.id,
-        message_id=prompt_message_id,
-        text="Выберите тип проблемы для АХО-заявки:",
-        reply_markup=get_aho_issue_keyboard(),
-        state=state,
-    )
-    await state.update_data(prompt_message_id=prompt_message_id, comment_required=False)
-
-
-@router.callback_query(NewRequestStates.choosing_aho_issue, F.data.startswith("aho_other_"))
-async def process_aho_other_selection(callback_query: CallbackQuery, state: FSMContext) -> None:
-    await callback_query.answer()
-    user_data = await state.get_data()
-    prompt_message_id = user_data.get("prompt_message_id")
-    selection = callback_query.data.replace("aho_other_", "")
-
-    if selection == "cleaning":
-        description = "Прочее - Уборка кабинета"
-        await state.update_data(
-            description=description,
-            prompt_message_id=prompt_message_id,
-            comment_required=True,
-        )
-        await _prompt_for_photo(
-            callback_query.bot,
-            callback_query.message.chat.id,
-            prompt_message_id,
-            state,
-            description,
-            prompt_text=(
-                "Прикрепите фото или документ при необходимости (это необязательно). "
-                "После этого укажем срочность выполнения."
-            ),
-        )
-        return
-
-    if selection == "custom":
         prompt_message_id = await update_request_prompt(
             bot=callback_query.bot,
             chat_id=callback_query.message.chat.id,
@@ -638,22 +755,20 @@ async def process_aho_other_selection(callback_query: CallbackQuery, state: FSMC
             state=state,
         )
         await state.update_data(
-            base_issue="Прочее",
+            base_issue=description,
             prompt_message_id=prompt_message_id,
             comment_required=False,
         )
         await state.set_state(NewRequestStates.waiting_for_description)
         return
 
-    prompt_message_id = await update_request_prompt(
-        bot=callback_query.bot,
-        chat_id=callback_query.message.chat.id,
-        message_id=prompt_message_id,
-        text="Не удалось определить выбранную подкатегорию. Попробуйте снова.",
-        reply_markup=get_aho_other_subcategory_keyboard(),
-        state=state,
+    await _prompt_for_photo(
+        callback_query.bot,
+        callback_query.message.chat.id,
+        prompt_message_id,
+        state,
+        description,
     )
-    await state.update_data(prompt_message_id=prompt_message_id)
 
 
 @router.message(NewRequestStates.waiting_for_description)

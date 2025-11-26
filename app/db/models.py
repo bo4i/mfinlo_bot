@@ -60,12 +60,16 @@ class Category(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String, unique=True)
+    request_type = Column(String, default="IT")
     request_count = Column(Integer, default=0)
 
     subcategories = relationship("Subcategory", back_populates="category", cascade="all, delete")
 
     def __repr__(self) -> str:
-        return f"<Category(id={self.id}, name='{self.name}', requests={self.request_count})>"
+        return (
+            f"<Category(id={self.id}, name='{self.name}', request_type='{self.request_type}', "
+            f"requests={self.request_count})>"
+        )
 
 
 class Subcategory(Base):

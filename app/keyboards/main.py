@@ -39,30 +39,6 @@ def get_organization_selection_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def get_aho_issue_keyboard() -> InlineKeyboardMarkup:
-    buttons = [
-        [InlineKeyboardButton(text="1. Заявка на канцтовары", callback_data="aho_issue_supplies")],
-        [InlineKeyboardButton(text="2. Замена световых ламп", callback_data="aho_issue_lamps")],
-        [InlineKeyboardButton(text="3. Починка кондиционера", callback_data="aho_issue_aircon")],
-        [InlineKeyboardButton(text="4. Пользование авто", callback_data="aho_issue_car")],
-        [InlineKeyboardButton(text="5. Заявка хозтовары", callback_data="aho_issue_household")],
-        [InlineKeyboardButton(text="6. Регулировка отопления", callback_data="aho_issue_heating")],
-        [InlineKeyboardButton(text="7. Заявка на мелкие ремонтные работы", callback_data="aho_issue_repairs")],
-        [InlineKeyboardButton(text="8. Прочее", callback_data="aho_issue_other")],
-        [InlineKeyboardButton(text="Назад", callback_data="aho_issue_cancel")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def get_aho_other_subcategory_keyboard() -> InlineKeyboardMarkup:
-    buttons = [
-        [InlineKeyboardButton(text="Уборка кабинета", callback_data="aho_other_cleaning")],
-        [InlineKeyboardButton(text="Указать самостоятельно", callback_data="aho_other_custom")],
-        [InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_aho_issue")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
 def get_comment_skip_keyboard() -> InlineKeyboardMarkup:
     buttons = [[InlineKeyboardButton(text="Пропустить", callback_data="skip_comment")]]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
