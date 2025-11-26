@@ -2,6 +2,8 @@ from aiogram.fsm.state import State, StatesGroup
 
 
 class NewRequestStates(StatesGroup):
+    choosing_category = State()
+    choosing_subcategory = State()
     choosing_aho_issue = State()
     waiting_for_description = State()
     waiting_for_car_date = State()
@@ -13,4 +15,5 @@ class NewRequestStates(StatesGroup):
     waiting_for_date = State()
     waiting_for_time = State()
     waiting_for_comment = State()
+    waiting_for_planned_date = State()
     waiting_for_confirmation = State()

@@ -29,6 +29,8 @@ class Request(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     request_type = Column(String)
+    category_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
+    subcategory_id = Column(Integer, ForeignKey("subcategories.id"), nullable=True)
     description = Column(String)
     urgency = Column(String)
     due_date = Column(String, nullable=True)
@@ -43,11 +45,44 @@ class Request(Base):
     car_start_at = Column(DateTime, nullable=True)
     car_end_at = Column(DateTime, nullable=True)
     car_location = Column(String, nullable=True)
+    planned_date = Column(DateTime, nullable=True)
 
     creator = relationship("User", back_populates="requests")
+    category = relationship("Category")
+    subcategory = relationship("Subcategory")
 
     def __repr__(self) -> str:
         return f"<Request(id={self.id}, type='{self.request_type}', status='{self.status}')>"
+
+
+class Category(Base):
+    __tablename__ = "categories"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, unique=True)
+    request_count = Column(Integer, default=0)
+
+    subcategories = relationship("Subcategory", back_populates="category", cascade="all, delete")
+
+    def __repr__(self) -> str:
+        return f"<Category(id={self.id}, name='{self.name}', requests={self.request_count})>"
+
+
+class Subcategory(Base):
+    __tablename__ = "subcategories"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String)
+    category_id = Column(Integer, ForeignKey("categories.id"))
+    request_count = Column(Integer, default=0)
+
+    category = relationship("Category", back_populates="subcategories")
+
+    def __repr__(self) -> str:
+        return (
+            f"<Subcategory(id={self.id}, name='{self.name}', category_id={self.category_id}, "
+            f"requests={self.request_count})>"
+        )
 
 
 class Admin(Base):

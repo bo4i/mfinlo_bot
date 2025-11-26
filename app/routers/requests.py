@@ -4,11 +4,11 @@ from datetime import datetime, timedelta
 
 from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from aiogram_calendar import SimpleCalendar, SimpleCalendarCallback
 
 from app.db import get_db
-from app.db.models import Admin, Request, User
+from app.db.models import Admin, Category, Request, Subcategory, User
 from app.keyboards.admin import get_admin_new_request_keyboard
 from app.keyboards.main import (
     get_aho_issue_keyboard,
@@ -89,6 +89,46 @@ def _find_overlapping_car_request(db_session, start_at: datetime, end_at: dateti
     )
 
 
+def _get_sorted_categories(db_session) -> list[Category]:
+    return (
+        db_session.query(Category)
+        .order_by(Category.request_count.desc(), Category.name.asc())
+        .all()
+    )
+
+
+def _get_sorted_subcategories(db_session, category_id: int) -> list[Subcategory]:
+    return (
+        db_session.query(Subcategory)
+        .filter(Subcategory.category_id == category_id)
+        .order_by(Subcategory.request_count.desc(), Subcategory.name.asc())
+        .all()
+    )
+
+
+def _build_categories_keyboard(categories: list[Category]) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text=f"{idx + 1}. {category.name}", callback_data=f"cat_{category.id}")]
+        for idx, category in enumerate(categories)
+    ]
+    buttons.append([InlineKeyboardButton(text="Назад", callback_data="category_cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def _build_subcategories_keyboard(subcategories: list[Subcategory], category_id: int) -> InlineKeyboardMarkup:
+    buttons = [
+        [
+            InlineKeyboardButton(
+                text=f"{idx + 1}. {subcategory.name}",
+                callback_data=f"sub_{subcategory.id}",
+            )
+        ]
+        for idx, subcategory in enumerate(subcategories)
+    ]
+    buttons.append([InlineKeyboardButton(text="Назад", callback_data=f"back_to_cat_{category_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 async def _prompt_for_photo(
     bot: Bot,
     chat_id: int,
@@ -128,16 +168,27 @@ async def _prompt_for_confirmation(bot: Bot, chat_id: int, state: FSMContext) ->
     urgency = user_data.get("urgency")
     due_date = user_data.get("due_date")
     comment = user_data.get("comment")
+    category_name = user_data.get("category_name")
+    subcategory_name = user_data.get("subcategory_name")
+    planned_date = user_data.get("planned_date")
 
     urgency_text = "Как можно скорее" if urgency == "ASAP" else f"К {due_date}" if due_date else "Не указана"
     request_name = "ИТ" if request_type == "IT" else "АХО" if request_type == "AHO" else ""
 
+    description_line = description
+    if category_name:
+        description_line = f"Категория: {category_name}"
+    if subcategory_name:
+        description_line += f"\nПодкатегория: {subcategory_name}"
+
     summary_lines = [
         "Проверьте данные заявки:",
         f"Тип: {request_name}",
-        f"Описание: {description}",
+        f"Описание: {description_line}",
         f"Срочность: {urgency_text}",
     ]
+    if planned_date:
+        summary_lines.append(f"Дата исполнения: {planned_date}")
     summary_lines.append(f"Комментарий: {comment}" if comment else "Комментарий: отсутствует")
     summary_lines.append("Отправить заявку?")
 
@@ -178,14 +229,201 @@ async def start_new_request(message: Message, state: FSMContext) -> None:
         await state.set_state(NewRequestStates.choosing_aho_issue)
         return
 
+    with get_db() as db:
+        categories = _get_sorted_categories(db)
+
     prompt_message_id = await update_request_prompt(
         bot=message.bot,
         chat_id=message.chat.id,
         message_id=None,
-        text=f"Опишите вашу проблему для {request_type}-заявки:",
+        text="Выберите категорию ИТ-заявки:",
+        reply_markup=_build_categories_keyboard(categories),
     )
     await state.update_data(prompt_message_id=prompt_message_id)
-    await state.set_state(NewRequestStates.waiting_for_description)
+    await state.set_state(NewRequestStates.choosing_category)
+
+
+@router.callback_query(NewRequestStates.choosing_category, F.data == "category_cancel")
+async def cancel_category_selection(callback_query: CallbackQuery, state: FSMContext) -> None:
+    await callback_query.answer("Отмена")
+    user_data = await state.get_data()
+    prompt_message_id = user_data.get("prompt_message_id")
+    await update_request_prompt(
+        bot=callback_query.bot,
+        chat_id=callback_query.message.chat.id,
+        message_id=prompt_message_id,
+        text="Создание заявки отменено. Вы можете начать заново с помощью команды /start.",
+        reply_markup=None,
+    )
+    await state.clear()
+
+
+@router.callback_query(NewRequestStates.choosing_category, F.data.startswith("cat_"))
+async def process_category_selection(callback_query: CallbackQuery, state: FSMContext) -> None:
+    await callback_query.answer()
+    user_data = await state.get_data()
+    prompt_message_id = user_data.get("prompt_message_id")
+    try:
+        category_id = int(callback_query.data.replace("cat_", ""))
+    except ValueError:
+        await update_request_prompt(
+            bot=callback_query.bot,
+            chat_id=callback_query.message.chat.id,
+            message_id=prompt_message_id,
+            text="Не удалось определить категорию. Попробуйте снова.",
+            edit_existing=False,
+        )
+        return
+
+    with get_db() as db:
+        category = db.query(Category).filter(Category.id == category_id).first()
+        if not category:
+            await update_request_prompt(
+                bot=callback_query.bot,
+                chat_id=callback_query.message.chat.id,
+                message_id=prompt_message_id,
+                text="Категория не найдена. Попробуйте выбрать заново.",
+                edit_existing=False,
+            )
+            categories = _get_sorted_categories(db)
+            await state.update_data(prompt_message_id=prompt_message_id)
+            await callback_query.message.edit_reply_markup(reply_markup=_build_categories_keyboard(categories))
+            return
+
+        subcategories = _get_sorted_subcategories(db, category_id)
+
+    if not subcategories:
+        await update_request_prompt(
+            bot=callback_query.bot,
+            chat_id=callback_query.message.chat.id,
+            message_id=prompt_message_id,
+            text="Для выбранной категории пока нет подкатегорий. Попробуйте выбрать другую категорию.",
+            edit_existing=False,
+        )
+        with get_db() as db:
+            categories = _get_sorted_categories(db)
+        await state.update_data(prompt_message_id=prompt_message_id)
+        await callback_query.message.edit_reply_markup(reply_markup=_build_categories_keyboard(categories))
+        return
+
+    prompt_message_id = await update_request_prompt(
+        bot=callback_query.bot,
+        chat_id=callback_query.message.chat.id,
+        message_id=prompt_message_id,
+        text=f"Категория: {category.name}\nВыберите подкатегорию:",
+        reply_markup=_build_subcategories_keyboard(subcategories, category_id),
+    )
+    await state.update_data(
+        prompt_message_id=prompt_message_id,
+        category_id=category_id,
+        category_name=category.name,
+    )
+    await state.set_state(NewRequestStates.choosing_subcategory)
+
+
+@router.callback_query(NewRequestStates.choosing_subcategory, F.data.startswith("back_to_cat_"))
+async def back_to_categories(callback_query: CallbackQuery, state: FSMContext) -> None:
+    await callback_query.answer()
+    with get_db() as db:
+        categories = _get_sorted_categories(db)
+    user_data = await state.get_data()
+    prompt_message_id = user_data.get("prompt_message_id")
+    prompt_message_id = await update_request_prompt(
+        bot=callback_query.bot,
+        chat_id=callback_query.message.chat.id,
+        message_id=prompt_message_id,
+        text="Выберите категорию ИТ-заявки:",
+        reply_markup=_build_categories_keyboard(categories),
+    )
+    await state.update_data(prompt_message_id=prompt_message_id)
+    await state.set_state(NewRequestStates.choosing_category)
+
+
+@router.callback_query(NewRequestStates.choosing_subcategory, F.data.startswith("sub_"))
+async def process_subcategory_selection(callback_query: CallbackQuery, state: FSMContext) -> None:
+    await callback_query.answer()
+    user_data = await state.get_data()
+    prompt_message_id = user_data.get("prompt_message_id")
+    category_id = user_data.get("category_id")
+
+    try:
+        subcategory_id = int(callback_query.data.replace("sub_", ""))
+    except ValueError:
+        await update_request_prompt(
+            bot=callback_query.bot,
+            chat_id=callback_query.message.chat.id,
+            message_id=prompt_message_id,
+            text="Не удалось определить подкатегорию. Попробуйте снова.",
+            edit_existing=False,
+        )
+        return
+
+    with get_db() as db:
+        subcategory = db.query(Subcategory).filter(Subcategory.id == subcategory_id).first()
+    if not subcategory:
+        await update_request_prompt(
+            bot=callback_query.bot,
+            chat_id=callback_query.message.chat.id,
+            message_id=prompt_message_id,
+            text="Подкатегория не найдена. Попробуйте снова.",
+            edit_existing=False,
+        )
+        return
+
+    calendar_markup = await SimpleCalendar().start_calendar()
+    prompt_message_id = await update_request_prompt(
+        bot=callback_query.bot,
+        chat_id=callback_query.message.chat.id,
+        message_id=prompt_message_id,
+        text=(
+            f"Категория: {user_data.get('category_name', '')}\n"
+            f"Подкатегория: {subcategory.name}\n"
+            "Выберите дату исполнения заявки:"
+        ),
+        reply_markup=calendar_markup,
+    )
+    await state.update_data(
+        prompt_message_id=prompt_message_id,
+        subcategory_id=subcategory_id,
+        subcategory_name=subcategory.name,
+        description=f"{user_data.get('category_name', '')} - {subcategory.name}",
+    )
+    await state.set_state(NewRequestStates.waiting_for_planned_date)
+
+
+@router.callback_query(NewRequestStates.waiting_for_planned_date, SimpleCalendarCallback.filter())
+async def process_planned_date_selection(
+        callback_query: CallbackQuery, callback_data: SimpleCalendarCallback, state: FSMContext
+) -> None:
+    selected, selected_date = await SimpleCalendar().process_selection(callback_query, callback_data)
+
+    if not selected:
+        return
+
+    await callback_query.answer()
+    formatted_date = selected_date.strftime("%Y-%m-%d")
+    user_data = await state.get_data()
+    prompt_message_id = user_data.get("prompt_message_id")
+
+    prompt_message_id = await update_request_prompt(
+        bot=callback_query.bot,
+        chat_id=callback_query.message.chat.id,
+        message_id=prompt_message_id,
+        text=(
+            f"Дата исполнения: {formatted_date}\n"
+            "Вы можете добавить дополнительный комментарий или нажмите «Пропустить»."
+        ),
+        reply_markup=get_comment_skip_keyboard(),
+        edit_existing=False,
+    )
+
+    await state.update_data(
+        prompt_message_id=prompt_message_id,
+        planned_date=formatted_date,
+        due_date=formatted_date,
+        urgency="DATE",
+    )
+    await state.set_state(NewRequestStates.waiting_for_comment)
 
 @router.callback_query(NewRequestStates.choosing_aho_issue, F.data.startswith("aho_issue_"))
 async def process_aho_issue_selection(callback_query: CallbackQuery, state: FSMContext) -> None:
@@ -667,6 +905,8 @@ async def save_request(message: Message, state: FSMContext, user_id: int, bot: B
     user_data = await state.get_data()
     request_type = user_data.get("request_type")
     description = user_data.get("description")
+    category_id = user_data.get("category_id")
+    subcategory_id = user_data.get("subcategory_id")
     attachment_file_id = user_data.get("attachment_file_id")
     attachment_type = user_data.get("attachment_type")
     photo_file_id = attachment_file_id or user_data.get("photo_file_id")
@@ -680,9 +920,11 @@ async def save_request(message: Message, state: FSMContext, user_id: int, bot: B
     car_start_at_raw = user_data.get("car_start_at")
     car_end_at_raw = user_data.get("car_end_at")
     car_location = user_data.get("car_location")
+    planned_date_raw = user_data.get("planned_date")
 
     car_start_at = None
     car_end_at = None
+    planned_date = None
     if car_start_at_raw:
         try:
             car_start_at = datetime.fromisoformat(car_start_at_raw)
@@ -693,6 +935,11 @@ async def save_request(message: Message, state: FSMContext, user_id: int, bot: B
             car_end_at = datetime.fromisoformat(car_end_at_raw)
         except ValueError:
             car_end_at = None
+    if planned_date_raw:
+        try:
+            planned_date = datetime.strptime(planned_date_raw, "%Y-%m-%d")
+        except ValueError:
+            planned_date = None
 
     with get_db() as db:
         user = db.query(User).filter(User.id == user_id).first()
@@ -711,6 +958,8 @@ async def save_request(message: Message, state: FSMContext, user_id: int, bot: B
             user_id=user_id,
             request_type=request_type,
             description=description,
+            category_id=category_id,
+            subcategory_id=subcategory_id,
             photo_file_id=photo_file_id,
             attachment_type=attachment_type,
             urgency=urgency,
@@ -720,8 +969,19 @@ async def save_request(message: Message, state: FSMContext, user_id: int, bot: B
             car_start_at=car_start_at,
             car_end_at=car_end_at,
             car_location=car_location,
+            planned_date=planned_date,
         )
         db.add(new_request)
+
+        if category_id:
+            category = db.query(Category).filter(Category.id == category_id).first()
+            if category:
+                category.request_count = (category.request_count or 0) + 1
+        if subcategory_id:
+            subcategory = db.query(Subcategory).filter(Subcategory.id == subcategory_id).first()
+            if subcategory:
+                subcategory.request_count = (subcategory.request_count or 0) + 1
+
         db.commit()
         db.refresh(new_request)
 
@@ -746,12 +1006,26 @@ async def notify_admins(db_session, request: Request, user: User, bot: Bot) -> N
         user_details += f"\n🚪 Кабинет: {user.office_number}"
 
     comment_block = f"\n💬 Комментарий: {request.comment}" if request.comment else ""
+    category_block = ""
+    if request.category or request.subcategory:
+        category_lines = []
+        if request.category:
+            category_lines.append(f"Категория: {request.category.name}")
+        if request.subcategory:
+            category_lines.append(f"Подкатегория: {request.subcategory.name}")
+        category_block = "\n" + "\n".join(category_lines)
+    planned_date_text = None
+    if request.due_date:
+        planned_date_text = request.due_date
+    elif request.planned_date:
+        planned_date_text = request.planned_date.strftime("%Y-%m-%d")
+    planned_date_block = f"\n📅 Дата исполнения: {planned_date_text}" if planned_date_text else ""
 
     request_info = (
         f"🚨 Новая заявка от {user.full_name} 🚨\n"
         f"{user_details}\n"
-        f"📝 Описание: {request.description}\n"
-        f"⏰ Срочность: {'Как можно скорее' if request.urgency == 'ASAP' else f'К {request.due_date}'}{comment_block}\n"
+        f"📝 Описание: {request.description}{category_block}\n"
+        f"⏰ Срочность: {'Как можно скорее' if request.urgency == 'ASAP' else f'К {request.due_date}'}{planned_date_block}{comment_block}\n"
         f"🆔 Заявка ID: {request.id}"
     )
 
