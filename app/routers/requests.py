@@ -25,6 +25,16 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
+async def _track_temporary_message(state: FSMContext | None, message_id: int | None) -> None:
+    if not state or not message_id:
+        return
+
+    user_data = await state.get_data()
+    existing_ids = set(user_data.get("messages_to_cleanup", []))
+    existing_ids.add(message_id)
+    await state.update_data(messages_to_cleanup=list(existing_ids))
+
+
 async def update_request_prompt(
     bot: Bot,
     chat_id: int,
@@ -33,6 +43,8 @@ async def update_request_prompt(
     reply_markup=None,
     *,
     edit_existing: bool = True,
+    state: FSMContext | None = None,
+    track_message: bool = True,
 ) -> int:
     """Edit an existing prompt message or send a new one if editing fails."""
     if edit_existing and message_id:
@@ -43,12 +55,30 @@ async def update_request_prompt(
                 message_id=message_id,
                 reply_markup=reply_markup,
             )
+            if track_message:
+                await _track_temporary_message(state, message_id)
             return message_id
         except Exception as exc:  # noqa: BLE001
             logger.warning("Не удалось отредактировать сообщение %s: %s", message_id, exc)
 
     sent_message = await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+    if track_message:
+        await _track_temporary_message(state, sent_message.message_id)
     return sent_message.message_id
+
+
+async def _cleanup_request_messages(bot: Bot, chat_id: int, state: FSMContext) -> None:
+    user_data = await state.get_data()
+    message_ids = user_data.get("messages_to_cleanup", [])
+    for message_id in message_ids:
+        if not message_id:
+            continue
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Не удалось удалить сообщение %s: %s", message_id, exc)
+
+    await state.update_data(messages_to_cleanup=[])
 
 
 def _parse_duration_minutes(duration_text: str) -> int | None:
@@ -136,15 +166,30 @@ async def _prompt_for_photo(
     prompt_message_id: int | None,
     state: FSMContext,
     description: str,
+    *,
+    attachment_required: bool = False,
+    prompt_text: str | None = None,
 ) -> None:
+    if not prompt_text:
+        prompt_text = (
+            "Прикрепите фото или документ (если это необходимо) или нажмите «Пропустить»."
+            if not attachment_required
+            else "Пожалуйста, прикрепите необходимый файл (фото или документ). Это обязательный шаг."
+        )
+
     prompt_message_id = await update_request_prompt(
         bot=bot,
         chat_id=chat_id,
         message_id=prompt_message_id,
-        text="Прикрепите фото или документ (если это необходимо) или нажмите «Пропустить».",
-        reply_markup=get_photo_skip_keyboard(),
+        text=prompt_text,
+        reply_markup=None if attachment_required else get_photo_skip_keyboard(),
     )
-    await state.update_data(description=description, prompt_message_id=prompt_message_id)
+    await state.update_data(
+        description=description,
+        prompt_message_id=prompt_message_id,
+        attachment_required=attachment_required,
+        photo_prompt_text=prompt_text,
+    )
     await state.set_state(NewRequestStates.waiting_for_photo)
 
 
@@ -153,9 +198,9 @@ async def _prompt_for_comment(bot: Bot, chat_id: int, prompt_message_id: int | N
         bot=bot,
         chat_id=chat_id,
         message_id=prompt_message_id,
-        text="Вы можете добавить дополнительный комментарий к заявке или нажмите «Пропустить».",
-        reply_markup=get_comment_skip_keyboard(),
+        text="Опишите дополнительные детали проблемы — так мы сможем решить вашу заявку максимально быстро.",
         edit_existing=False,
+        state=state,
     )
     await state.update_data(prompt_message_id=prompt_message_id)
     await state.set_state(NewRequestStates.waiting_for_comment)
@@ -200,6 +245,7 @@ async def _prompt_for_confirmation(bot: Bot, chat_id: int, state: FSMContext) ->
         text="\n".join(summary_lines),
         reply_markup=get_request_confirmation_keyboard(),
         edit_existing=False,
+        state=state,
     )
     await state.update_data(prompt_message_id=prompt_message_id)
     await state.set_state(NewRequestStates.waiting_for_confirmation)
@@ -214,7 +260,7 @@ async def start_new_request(message: Message, state: FSMContext) -> None:
         if not user or not user.registered:
             await message.answer("Вы не зарегистрированы или регистрация не завершена. Пожалуйста, начните с команды /start.")
             return
-
+    await _track_temporary_message(state, message.message_id)
     request_type = "IT" if message.text == "Создать ИТ-заявку" else "AHO"
     await state.update_data(request_type=request_type)
 
@@ -225,6 +271,7 @@ async def start_new_request(message: Message, state: FSMContext) -> None:
             message_id=None,
             text="Выберите тип проблемы для АХО-заявки:",
             reply_markup=get_aho_issue_keyboard(),
+            state=state,
         )
         await state.update_data(prompt_message_id=prompt_message_id)
         await state.set_state(NewRequestStates.choosing_aho_issue)
@@ -240,6 +287,7 @@ async def start_new_request(message: Message, state: FSMContext) -> None:
         message_id=None,
         text="Выберите категорию ИТ-заявки:",
         reply_markup=_build_categories_keyboard(categories),
+        state=state,
     )
     await state.update_data(prompt_message_id=prompt_message_id)
     await state.set_state(NewRequestStates.choosing_category)
@@ -250,13 +298,11 @@ async def cancel_category_selection(callback_query: CallbackQuery, state: FSMCon
     await callback_query.answer("Отмена")
     user_data = await state.get_data()
     prompt_message_id = user_data.get("prompt_message_id")
-    await update_request_prompt(
-        bot=callback_query.bot,
+    await callback_query.bot.send_message(
         chat_id=callback_query.message.chat.id,
-        message_id=prompt_message_id,
         text="Создание заявки отменено. Вы можете начать заново с помощью команды /start.",
-        reply_markup=None,
     )
+    await _cleanup_request_messages(callback_query.bot, callback_query.message.chat.id, state)
     await state.clear()
 
 
@@ -274,6 +320,7 @@ async def process_category_selection(callback_query: CallbackQuery, state: FSMCo
             message_id=prompt_message_id,
             text="Не удалось определить категорию. Попробуйте снова.",
             edit_existing=False,
+            state=state,
         )
         return
 
@@ -286,6 +333,7 @@ async def process_category_selection(callback_query: CallbackQuery, state: FSMCo
                 message_id=prompt_message_id,
                 text="Категория не найдена. Попробуйте выбрать заново.",
                 edit_existing=False,
+                state=state,
             )
             categories = _get_sorted_categories(db)
             await state.update_data(prompt_message_id=prompt_message_id)
@@ -301,6 +349,7 @@ async def process_category_selection(callback_query: CallbackQuery, state: FSMCo
             message_id=prompt_message_id,
             text="Для выбранной категории пока нет подкатегорий. Попробуйте выбрать другую категорию.",
             edit_existing=False,
+            state=state,
         )
         with get_db() as db:
             categories = _get_sorted_categories(db)
@@ -314,6 +363,7 @@ async def process_category_selection(callback_query: CallbackQuery, state: FSMCo
         message_id=prompt_message_id,
         text=f"Категория: {category.name}\nВыберите подкатегорию:",
         reply_markup=_build_subcategories_keyboard(subcategories, category_id),
+        state=state,
     )
     await state.update_data(
         prompt_message_id=prompt_message_id,
@@ -336,6 +386,7 @@ async def back_to_categories(callback_query: CallbackQuery, state: FSMContext) -
         message_id=prompt_message_id,
         text="Выберите категорию ИТ-заявки:",
         reply_markup=_build_categories_keyboard(categories),
+        state=state,
     )
     await state.update_data(prompt_message_id=prompt_message_id)
     await state.set_state(NewRequestStates.choosing_category)
@@ -357,6 +408,7 @@ async def process_subcategory_selection(callback_query: CallbackQuery, state: FS
             message_id=prompt_message_id,
             text="Не удалось определить подкатегорию. Попробуйте снова.",
             edit_existing=False,
+            state=state,
         )
         return
 
@@ -369,6 +421,7 @@ async def process_subcategory_selection(callback_query: CallbackQuery, state: FS
             message_id=prompt_message_id,
             text="Подкатегория не найдена. Попробуйте снова.",
             edit_existing=False,
+            state=state,
         )
         return
 
@@ -412,6 +465,7 @@ async def process_aho_issue_selection(callback_query: CallbackQuery, state: FSMC
             message_id=prompt_message_id,
             text="Опишите проблему для АХО-заявки:",
             edit_existing=False,
+            state=state,
         )
         await state.update_data(prompt_message_id=prompt_message_id)
         await state.set_state(NewRequestStates.waiting_for_description)
@@ -425,6 +479,7 @@ async def process_aho_issue_selection(callback_query: CallbackQuery, state: FSMC
             message_id=prompt_message_id,
             text="Выберите дату поездки на авто:",
             reply_markup=calendar_markup,
+            state=state,
         )
         await state.update_data(
             description=issue_descriptions.get(selection, ""),
@@ -441,15 +496,62 @@ async def process_aho_issue_selection(callback_query: CallbackQuery, state: FSMC
             message_id=prompt_message_id,
             text="Не удалось определить выбранный тип заявки. Пожалуйста, попробуйте снова.",
             reply_markup=get_aho_issue_keyboard(),
+            state=state,
         )
         await state.update_data(prompt_message_id=prompt_message_id)
         return
 
+    if selection == "supplies":
+        await _prompt_for_photo(
+            callback_query.bot,
+            callback_query.message.chat.id,
+            prompt_message_id,
+            state,
+            description,
+            attachment_required=True,
+            prompt_text=(
+                "Прикрепите перечень канцтоваров файлом (фото или документ). "
+                "Отправка файла обязательна для оформления заявки."
+            ),
+        )
+        return
+
+    if selection == "household":
+        await _prompt_for_photo(
+            callback_query.bot,
+            callback_query.message.chat.id,
+            prompt_message_id,
+            state,
+            description,
+            attachment_required=True,
+            prompt_text=(
+                "Прикрепите перечень хозтоваров файлом (фото или документ). "
+                "Отправка файла обязательна для оформления заявки."
+            ),
+        )
+        return
+
+    if selection == "repairs":
+        prompt_message_id = await update_request_prompt(
+            bot=callback_query.bot,
+            chat_id=callback_query.message.chat.id,
+            message_id=prompt_message_id,
+            text=(
+                "Опишите, что нужно отремонтировать. После текста вы сможете при необходимости"
+                " прикрепить фото или документ."
+            ),
+            edit_existing=False,
+            state=state,
+        )
+        await state.update_data(base_issue=description, prompt_message_id=prompt_message_id)
+        await state.set_state(NewRequestStates.waiting_for_description)
+        return
     await _prompt_for_photo(callback_query.bot, callback_query.message.chat.id, prompt_message_id, state, description)
 
 
 @router.message(NewRequestStates.waiting_for_description)
 async def process_description(message: Message, state: FSMContext) -> None:
+    await _track_temporary_message(state, message.message_id)
     if not message.text:
         user_data = await state.get_data()
         prompt_message_id = user_data.get("prompt_message_id")
@@ -459,12 +561,15 @@ async def process_description(message: Message, state: FSMContext) -> None:
             message_id=prompt_message_id,
             text="Пожалуйста, введите описание проблемы текстом.",
             edit_existing=False,
+            state=state,
         )
         return
 
     user_data = await state.get_data()
     prompt_message_id = user_data.get("prompt_message_id")
-    await _prompt_for_photo(message.bot, message.chat.id, prompt_message_id, state, message.text)
+    base_issue = user_data.get("base_issue")
+    description = f"{base_issue}: {message.text}" if base_issue else message.text
+    await _prompt_for_photo(message.bot, message.chat.id, prompt_message_id, state, description)
 
 
 @router.callback_query(NewRequestStates.waiting_for_car_date, SimpleCalendarCallback.filter())
@@ -490,6 +595,7 @@ async def process_car_date_selection(
 
         ),
         edit_existing=False,
+        state=state,
     )
     await state.update_data(car_date=formatted_date, prompt_message_id=prompt_message_id)
     await state.set_state(NewRequestStates.waiting_for_car_time)
@@ -497,6 +603,7 @@ async def process_car_date_selection(
 
 @router.message(NewRequestStates.waiting_for_car_time)
 async def process_car_time(message: Message, state: FSMContext) -> None:
+    await _track_temporary_message(state, message.message_id)
     time_text = (message.text or "").strip()
     user_data = await state.get_data()
     prompt_message_id = user_data.get("prompt_message_id")
@@ -511,6 +618,7 @@ async def process_car_time(message: Message, state: FSMContext) -> None:
             text="Произошла ошибка при выборе даты поездки. Пожалуйста, выберите дату снова.",
             reply_markup=calendar_markup,
             edit_existing=False,
+            state=state,
         )
         await state.update_data(prompt_message_id=prompt_message_id)
         await state.set_state(NewRequestStates.waiting_for_car_date)
@@ -526,6 +634,7 @@ async def process_car_time(message: Message, state: FSMContext) -> None:
             message_id=prompt_message_id,
             text="Неверный формат времени. Пожалуйста, используйте формат ЧЧ:ММ (например, 10:00).",
             edit_existing=False,
+            state=state,
         )
         await state.update_data(prompt_message_id=prompt_message_id)
         return
@@ -536,6 +645,7 @@ async def process_car_time(message: Message, state: FSMContext) -> None:
         message_id=prompt_message_id,
         text="Укажите продолжительность поездки (например, 2 часа).",
         edit_existing=False,
+        state=state,
     )
     await state.update_data(car_time=normalized_time, prompt_message_id=prompt_message_id)
     await state.set_state(NewRequestStates.waiting_for_car_duration)
@@ -543,6 +653,7 @@ async def process_car_time(message: Message, state: FSMContext) -> None:
 
 @router.message(NewRequestStates.waiting_for_car_duration)
 async def process_car_duration(message: Message, state: FSMContext) -> None:
+    await _track_temporary_message(state, message.message_id)
     duration_text = (message.text or "").strip()
     user_data = await state.get_data()
     prompt_message_id = user_data.get("prompt_message_id")
@@ -556,6 +667,7 @@ async def process_car_duration(message: Message, state: FSMContext) -> None:
             message_id=prompt_message_id,
             text="Пожалуйста, укажите продолжительность поездки (например, 2 часа).",
             edit_existing=False,
+            state=state,
         )
         await state.update_data(prompt_message_id=prompt_message_id)
         return
@@ -568,6 +680,7 @@ async def process_car_duration(message: Message, state: FSMContext) -> None:
             message_id=prompt_message_id,
             text="Не удалось распознать продолжительность. Укажите её в формате '2 часа' или '1:30'.",
             edit_existing=False,
+            state=state,
         )
         await state.update_data(prompt_message_id=prompt_message_id)
         return
@@ -581,6 +694,8 @@ async def process_car_duration(message: Message, state: FSMContext) -> None:
             message_id=prompt_message_id,
             text="Произошла ошибка при определении даты или времени. Пожалуйста, введите время начала снова.",
             edit_existing=False,
+            state=state,
+
         )
         await state.update_data(prompt_message_id=prompt_message_id)
         await state.set_state(NewRequestStates.waiting_for_car_time)
@@ -605,6 +720,7 @@ async def process_car_duration(message: Message, state: FSMContext) -> None:
                 "Выберите другое время начала поездки (ЧЧ:ММ)."
             ),
             edit_existing=False,
+            state=state,
         )
         await state.update_data(prompt_message_id=prompt_message_id)
         await state.set_state(NewRequestStates.waiting_for_car_time)
@@ -623,6 +739,7 @@ async def process_car_duration(message: Message, state: FSMContext) -> None:
         message_id=prompt_message_id,
         text="Укажите место поездки.",
         edit_existing=False,
+        state=state,
     )
     await state.update_data(prompt_message_id=prompt_message_id)
     await state.set_state(NewRequestStates.waiting_for_car_location)
@@ -630,6 +747,7 @@ async def process_car_duration(message: Message, state: FSMContext) -> None:
 
     @router.message(NewRequestStates.waiting_for_car_location)
     async def process_car_location(message: Message, state: FSMContext) -> None:
+        await _track_temporary_message(state, message.message_id)
         location_text = (message.text or "").strip()
         user_data = await state.get_data()
         prompt_message_id = user_data.get("prompt_message_id")
@@ -646,6 +764,7 @@ async def process_car_duration(message: Message, state: FSMContext) -> None:
                 message_id=prompt_message_id,
                 text="Пожалуйста, укажите место поездки.",
                 edit_existing=False,
+                state=state,
             )
             await state.update_data(prompt_message_id=prompt_message_id)
             return
@@ -687,22 +806,26 @@ async def _store_attachment_and_ask_urgency(
         text="Файл прикреплён. Как срочно необходимо выполнить заявку?",
         reply_markup=get_urgency_keyboard(),
         edit_existing=False,
+        state=state,
     )
     await state.update_data(
         attachment_file_id=file_id,
         attachment_type=attachment_type,
         prompt_message_id=prompt_message_id,
+        attachment_required=False,
     )
     await state.set_state(NewRequestStates.waiting_for_urgency)
 
 @router.message(NewRequestStates.waiting_for_photo, F.photo)
 async def process_photo(message: Message, state: FSMContext) -> None:
+    await _track_temporary_message(state, message.message_id)
     photo_file_id = message.photo[-1].file_id
     await _store_attachment_and_ask_urgency(message, state, photo_file_id, "photo")
 
 
 @router.message(NewRequestStates.waiting_for_photo, F.document)
 async def process_document(message: Message, state: FSMContext) -> None:
+    await _track_temporary_message(state, message.message_id)
     document_file_id = message.document.file_id
     await _store_attachment_and_ask_urgency(message, state, document_file_id, "document")
 
@@ -711,12 +834,28 @@ async def skip_photo(callback_query: CallbackQuery, state: FSMContext) -> None:
     await callback_query.answer("Пропущено")
     user_data = await state.get_data()
     prompt_message_id = user_data.get("prompt_message_id")
+    if user_data.get("attachment_required"):
+        prompt_text = user_data.get("photo_prompt_text") or (
+            "Для этой заявки необходимо прикрепить файл (фото или документ). Отправьте его, пожалуйста."
+        )
+        prompt_message_id = await update_request_prompt(
+            bot=callback_query.bot,
+            chat_id=callback_query.message.chat.id,
+            message_id=prompt_message_id,
+            text=prompt_text,
+            edit_existing=False,
+            state=state,
+        )
+        await state.update_data(prompt_message_id=prompt_message_id)
+        return
+
     prompt_message_id = await update_request_prompt(
         bot=callback_query.bot,
         chat_id=callback_query.message.chat.id,
         message_id=prompt_message_id,
         text="Как срочно необходимо выполнить заявку?",
         reply_markup=get_urgency_keyboard(),
+        state=state,
     )
     await state.update_data(
         attachment_file_id=None,
@@ -727,8 +866,26 @@ async def skip_photo(callback_query: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.message(NewRequestStates.waiting_for_photo)
-async def handle_unexpected_photo_input(message: Message) -> None:
-    await message.answer("Пожалуйста, отправьте фото, документ или нажмите кнопку «Пропустить».")
+async def handle_unexpected_photo_input(message: Message, state: FSMContext) -> None:
+    user_data = await state.get_data()
+    if user_data.get("attachment_required"):
+        prompt_text = user_data.get("photo_prompt_text") or (
+            "Не удалось обработать сообщение. Прикрепите обязательный файл (фото или документ)."
+        )
+        await update_request_prompt(
+            bot=message.bot,
+            chat_id=message.chat.id,
+            message_id=user_data.get("prompt_message_id"),
+            text=prompt_text,
+            edit_existing=False,
+            state=state,
+        )
+        return
+
+    response = await message.answer(
+        "Пожалуйста, отправьте фото, документ или нажмите кнопку «Пропустить»."
+    )
+    await _track_temporary_message(state, response.message_id)
 
 
 @router.callback_query(NewRequestStates.waiting_for_urgency, F.data.in_({"urgency_asap", "urgency_date"}))
@@ -736,9 +893,13 @@ async def process_urgency_callback(callback_query: CallbackQuery, state: FSMCont
     await callback_query.answer()
     user_data = await state.get_data()
     prompt_message_id = user_data.get("prompt_message_id")
+    request_type = user_data.get("request_type")
     if callback_query.data == "urgency_asap":
         await state.update_data(urgency="ASAP")
-        await _prompt_for_comment(callback_query.bot, callback_query.message.chat.id, prompt_message_id, state)
+        if request_type == "AHO":
+            await _prompt_for_confirmation(callback_query.bot, callback_query.message.chat.id, state)
+        else:
+            await _prompt_for_comment(callback_query.bot, callback_query.message.chat.id, prompt_message_id, state)
     elif callback_query.data == "urgency_date":
         await state.update_data(urgency="DATE")
         calendar_markup = await SimpleCalendar().start_calendar()
@@ -748,6 +909,7 @@ async def process_urgency_callback(callback_query: CallbackQuery, state: FSMCont
             message_id=prompt_message_id,
             text="Выберите желаемую дату выполнения заявки:",
             reply_markup=calendar_markup,
+            state=state,
         )
         await state.update_data(prompt_message_id=prompt_message_id)
         await state.set_state(NewRequestStates.waiting_for_date)
@@ -777,6 +939,7 @@ async def process_date_selection(
             "Введите желаемое время в формате ЧЧ:ММ (например, 10:00)."
         ),
         edit_existing=False,
+        state=state,
     )
     await state.update_data(selected_date=formatted_date, prompt_message_id=prompt_message_id)
     await state.set_state(NewRequestStates.waiting_for_time)
@@ -784,6 +947,7 @@ async def process_date_selection(
 
 @router.message(NewRequestStates.waiting_for_time)
 async def process_time(message: Message, state: FSMContext) -> None:
+    await _track_temporary_message(state, message.message_id)
     time_text = (message.text or "").strip()
     user_data = await state.get_data()
     prompt_message_id = user_data.get("prompt_message_id")
@@ -796,6 +960,7 @@ async def process_time(message: Message, state: FSMContext) -> None:
             message_id=prompt_message_id,
             text="Произошла ошибка при выборе даты. Попробуйте выбрать дату снова.",
             edit_existing=False,
+            state=state,
         )
         await state.update_data(prompt_message_id=prompt_message_id)
         await state.set_state(NewRequestStates.waiting_for_urgency)
@@ -805,7 +970,10 @@ async def process_time(message: Message, state: FSMContext) -> None:
         parsed_datetime = datetime.strptime(f"{selected_date} {time_text}", "%Y-%m-%d %H:%M")
         normalized_date = parsed_datetime.strftime("%Y-%m-%d %H:%M")
         await state.update_data(due_date=normalized_date, prompt_message_id=prompt_message_id)
-        await _prompt_for_comment(message.bot, message.chat.id, prompt_message_id, state)
+        if user_data.get("request_type") == "AHO":
+            await _prompt_for_confirmation(message.bot, message.chat.id, state)
+        else:
+            await _prompt_for_comment(message.bot, message.chat.id, prompt_message_id, state)
     except ValueError:
         prompt_message_id = await update_request_prompt(
             bot=message.bot,
@@ -813,34 +981,49 @@ async def process_time(message: Message, state: FSMContext) -> None:
             message_id=prompt_message_id,
             text="Неверный формат времени. Пожалуйста, используйте формат ЧЧ:ММ (например, 10:00).",
             edit_existing=False,
+            state=state,
         )
         await state.update_data(prompt_message_id=prompt_message_id)
 
 
 @router.message(NewRequestStates.waiting_for_comment)
 async def process_comment(message: Message, state: FSMContext) -> None:
-    if not message.text:
-        user_data = await state.get_data()
-        prompt_message_id = user_data.get("prompt_message_id")
+    await _track_temporary_message(state, message.message_id)
+    comment_text = (message.text or "").strip()
+    user_data = await state.get_data()
+    prompt_message_id = user_data.get("prompt_message_id")
+
+    if not comment_text:
         await update_request_prompt(
             bot=message.bot,
             chat_id=message.chat.id,
             message_id=prompt_message_id,
-            text="Комментарий должен быть текстом. Введите комментарий или нажмите «Пропустить».",
-            reply_markup=get_comment_skip_keyboard(),
+            text="Опишите дополнительные детали проблемы — так мы сможем решить вашу заявку максимально быстро.",
             edit_existing=False,
+            state=state,
         )
+        await state.update_data(prompt_message_id=prompt_message_id)
         return
 
-    await state.update_data(comment=message.text)
+
+    await state.update_data(comment=comment_text, prompt_message_id=prompt_message_id)
     await _prompt_for_confirmation(message.bot, message.chat.id, state)
 
 
 @router.callback_query(NewRequestStates.waiting_for_comment, F.data == "skip_comment")
 async def skip_comment(callback_query: CallbackQuery, state: FSMContext) -> None:
-    await callback_query.answer("Пропущено")
-    await state.update_data(comment=None)
-    await _prompt_for_confirmation(callback_query.bot, callback_query.message.chat.id, state)
+    await callback_query.answer("Комментарий обязателен")
+    user_data = await state.get_data()
+    prompt_message_id = user_data.get("prompt_message_id")
+    prompt_message_id = await update_request_prompt(
+        bot=callback_query.bot,
+        chat_id=callback_query.message.chat.id,
+        message_id=prompt_message_id,
+        text="Опишите дополнительные детали проблемы — так мы сможем решить вашу заявку максимально быстро.",
+        edit_existing=False,
+        state=state,
+    )
+    await state.update_data(prompt_message_id=prompt_message_id)
 
 
 @router.callback_query(NewRequestStates.waiting_for_confirmation, F.data == "confirm_request")
@@ -852,15 +1035,11 @@ async def confirm_request(callback_query: CallbackQuery, state: FSMContext) -> N
 @router.callback_query(NewRequestStates.waiting_for_confirmation, F.data == "cancel_request")
 async def cancel_request(callback_query: CallbackQuery, state: FSMContext) -> None:
     await callback_query.answer("Заявка отменена")
-    user_data = await state.get_data()
-    prompt_message_id = user_data.get("prompt_message_id")
-    await update_request_prompt(
-        bot=callback_query.bot,
+    await callback_query.bot.send_message(
         chat_id=callback_query.message.chat.id,
-        message_id=prompt_message_id,
         text="Создание заявки отменено. Вы можете начать заново с помощью команды /start.",
-        reply_markup=None,
     )
+    await _cleanup_request_messages(callback_query.bot, callback_query.message.chat.id, state)
     await state.clear()
 
 
@@ -908,12 +1087,11 @@ async def save_request(message: Message, state: FSMContext, user_id: int, bot: B
         user = db.query(User).filter(User.id == user_id).first()
 
         if not user:
-            await update_request_prompt(
-                bot=bot,
+            await bot.send_message(
                 chat_id=message.chat.id,
-                message_id=prompt_message_id,
                 text="Произошла ошибка: пользователь не найден. Пожалуйста, попробуйте начать заново (/start).",
             )
+            await _cleanup_request_messages(bot, message.chat.id, state)
             await state.clear()
             return
 
@@ -948,13 +1126,11 @@ async def save_request(message: Message, state: FSMContext, user_id: int, bot: B
         db.commit()
         db.refresh(new_request)
 
-        await update_request_prompt(
-            bot=bot,
+        await bot.send_message(
             chat_id=message.chat.id,
-            message_id=prompt_message_id,
-            edit_existing=False,
-            text="Ваша заявка успешно создана и будет рассмотрена.",
+            text="Заявка успешно создана, вы можете отслеживать её статус в «Мои заявки».",
         )
+        await _cleanup_request_messages(bot, message.chat.id, state)
         await state.clear()
         await notify_admins(db, new_request, user, bot)
         logger.info("Заявка ID:%s от пользователя %s создана и отправлена администраторам.", new_request.id, user.id)
