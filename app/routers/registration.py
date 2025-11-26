@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 from aiogram import F, Router
 from aiogram.filters import CommandStart
@@ -19,10 +20,33 @@ logger = logging.getLogger(__name__)
 
 router = Router()
 
+_USER_GUIDE_CACHE: str | None = None
+
+
+def get_user_guide_text() -> str | None:
+    global _USER_GUIDE_CACHE
+
+    if _USER_GUIDE_CACHE is not None:
+        return _USER_GUIDE_CACHE
+
+    guide_path = Path(__file__).resolve().parents[2] / "docs" / "Руководство_пользователя.md"
+    try:
+        guide_text = guide_path.read_text(encoding="utf-8")
+        _USER_GUIDE_CACHE = guide_text
+        return guide_text
+    except OSError as exc:
+        logger.error("Не удалось прочитать руководство пользователя: %s", exc)
+        return None
+
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
+
+    user_guide = get_user_guide_text()
+    if user_guide:
+        await message.answer(user_guide)
+
     with get_db() as db:
         user = db.query(User).filter(User.id == message.from_user.id).first()
 
