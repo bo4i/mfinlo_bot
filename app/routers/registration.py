@@ -59,28 +59,28 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
                     await message.answer("Произошла ошибка при инициализации пользователя. Попробуйте еще раз.")
                     return
                 if not user.user_guide_shown:
-                        user.user_guide_shown = True
-                        db.commit()
-                        show_user_manual = True
+                    user.user_guide_shown = True
+                    db.commit()
+                    show_user_manual = True
         elif not user.user_guide_shown:
             user.user_guide_shown = True
             db.commit()
             show_user_manual = True
 
-            if show_user_manual:
-                await message.answer(_get_user_guide_text())
+        if show_user_manual:
+            await message.answer(_get_user_guide_text())
 
-            if not user:
-                await message.answer("Произошла ошибка при инициализации пользователя. Попробуйте еще раз.")
-                return
+        if not user:
+            await message.answer("Произошла ошибка при инициализации пользователя. Попробуйте еще раз.")
+            return
 
-            if not user.registered:
-                prompt_text = (
-                    "Добро пожаловать! Для использования бота необходимо зарегистрироваться. Укажите ваше ФИО:"
-                    if show_user_manual
-                    else "Вы не завершили регистрацию. Пожалуйста, укажите ваше ФИО:"
-                )
-                await message.answer(prompt_text)
+        if not user.registered:
+            prompt_text = (
+                "Добро пожаловать! Для использования бота необходимо зарегистрироваться. Укажите ваше ФИО:"
+                if show_user_manual
+                else "Вы не завершили регистрацию. Пожалуйста, укажите ваше ФИО:"
+            )
+            await message.answer(prompt_text)
             await state.set_state(RegistrationStates.waiting_for_full_name)
         else:
             await message.answer("С возвращением! Главное меню:", reply_markup=get_main_menu_keyboard(user.role))
