@@ -25,3 +25,11 @@ def get_admin_post_clarification_keyboard(request_id: int) -> InlineKeyboardMark
         [InlineKeyboardButton(text="Отказаться", callback_data=f"admin_decline_{request_id}")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_admin_feedback_keyboard(request_id: int) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text="Отправить без сообщения", callback_data=f"admin_feedback_skip_{request_id}")],
+        [InlineKeyboardButton(text="Отменить", callback_data=f"admin_feedback_cancel_{request_id}")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)

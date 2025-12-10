@@ -37,6 +37,14 @@ def _migrate_schema() -> None:
                     )
                 )
 
+    if "requests" in inspector.get_table_names():
+        request_columns = {column["name"] for column in inspector.get_columns("requests")}
+        if "admin_message_map" not in request_columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text("ALTER TABLE requests ADD COLUMN admin_message_map VARCHAR")
+                )
+
 @contextmanager
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()

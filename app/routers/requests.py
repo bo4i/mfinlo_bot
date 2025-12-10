@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 from datetime import datetime, timedelta
@@ -18,6 +19,7 @@ from app.keyboards.main import (
     get_urgency_keyboard,
 )
 from app.states.requests import NewRequestStates
+from app.services.admin_notifications import load_admin_message_map, save_admin_message_map
 from app.services.categories import ensure_aho_categories_exist, ensure_categories_exist
 
 logger = logging.getLogger(__name__)
@@ -1417,6 +1419,7 @@ async def notify_admins(db_session, request: Request, user: User, bot: Bot) -> N
     )
 
     keyboard = get_admin_new_request_keyboard(request.id)
+    admin_message_map = load_admin_message_map(request)
 
     for admin_id in admin_ids_to_notify:
         try:
@@ -1438,7 +1441,9 @@ async def notify_admins(db_session, request: Request, user: User, bot: Bot) -> N
                     )
             else:
                 sent_message = await bot.send_message(chat_id=admin_id, text=request_info, reply_markup=keyboard)
+            admin_message_map[admin_id] = sent_message.message_id
             request.admin_message_id = sent_message.message_id
+            save_admin_message_map(request, admin_message_map)
             db_session.commit()
             logger.info("Уведомление о заявке %s отправлено администратору %s.", request.id, admin_id)
         except Exception as exc:  # noqa: BLE001

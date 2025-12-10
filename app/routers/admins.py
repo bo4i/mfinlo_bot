@@ -1,6 +1,9 @@
 import logging
 from datetime import datetime
+
+
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
@@ -11,16 +14,168 @@ from app.db.models import Request, User
 from app.keyboards.admin import (
     get_admin_clarify_active_keyboard,
     get_admin_done_keyboard,
+    get_admin_feedback_keyboard,
     get_admin_new_request_keyboard,
     get_admin_post_clarification_keyboard,
 )
 from app.keyboards.main import get_main_menu_keyboard
 from app.keyboards.user import get_user_clarify_active_keyboard
+from app.services.admin_notifications import load_admin_message_map, save_admin_message_map
 from app.states.clarification import ClarificationState
+from app.states.completion import AdminCompletionState
 
 logger = logging.getLogger(__name__)
 
 router = Router()
+
+
+async def _edit_message_content(
+    *,
+    bot: Bot,
+    chat_id: int,
+    message_id: int,
+    text: str,
+    reply_markup=None,
+    has_media: bool = False,
+) -> bool:
+    try:
+        if has_media:
+            await bot.edit_message_caption(
+                chat_id=chat_id,
+                message_id=message_id,
+                caption=text,
+                reply_markup=reply_markup,
+            )
+        else:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                reply_markup=reply_markup,
+            )
+        return True
+    except TelegramBadRequest as exc:
+        logger.warning("Не удалось отредактировать сообщение %s: %s", message_id, exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Ошибка при редактировании сообщения %s: %s", message_id, exc)
+    return False
+
+
+async def _cleanup_menu_messages(state: FSMContext, bot: Bot, chat_id: int, key: str) -> None:
+    state_data = await state.get_data()
+    message_ids = state_data.get(key, [])
+    for message_id in message_ids:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Не удалось удалить сообщение %s из меню %s: %s", message_id, key, exc)
+    await state.update_data({key: []})
+
+
+async def _send_feedback_to_user(bot: Bot, request: Request, admin_user: User | None, feedback_message: Message | None):
+    if not feedback_message:
+        return
+
+    admin_name = admin_user.full_name if admin_user else "Администратор"
+    prefix = f"Сообщение от администратора {admin_name} по заявке ID:{request.id}\n"
+
+    try:
+        if feedback_message.photo:
+            await bot.send_photo(
+                chat_id=request.user_id,
+                photo=feedback_message.photo[-1].file_id,
+                caption=prefix + (feedback_message.caption or ""),
+            )
+        elif feedback_message.document:
+            await bot.send_document(
+                chat_id=request.user_id,
+                document=feedback_message.document.file_id,
+                caption=prefix + (feedback_message.caption or ""),
+            )
+        elif feedback_message.text:
+            await bot.send_message(chat_id=request.user_id, text=prefix + feedback_message.text)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "Не удалось отправить итоговое сообщение пользователю %s для заявки %s: %s",
+            request.user_id,
+            request.id,
+            exc,
+        )
+
+
+async def _complete_request(
+    *,
+    bot: Bot,
+    admin_id: int,
+    request_id: int,
+    admin_message_meta: dict | None,
+    feedback_message: Message | None,
+) -> bool:
+    with get_db() as db:
+        request = db.query(Request).filter(Request.id == request_id).first()
+        admin_user = db.query(User).filter(User.id == admin_id).first()
+
+        if not request:
+            return False
+
+        if request.assigned_admin_id != admin_id:
+            return False
+
+        if request.status == "Выполнено":
+            return False
+
+        request.status = "Выполнено"
+        request.completed_at = datetime.now()
+        db.commit()
+
+    await _send_feedback_to_user(bot, request, admin_user, feedback_message)
+
+    admin_full_name = admin_user.full_name if admin_user else None
+    admin_phone = admin_user.phone_number if admin_user else None
+
+    try:
+        details_line = f"Описание: {request.description[:150]}..." if request.description else ""
+        contact_line = ""
+        if admin_full_name or admin_phone:
+            contact_line = "Исполнитель: " + (admin_full_name or "")
+            if admin_phone:
+                contact_line += f" (тел. {admin_phone})"
+        await bot.send_message(
+            chat_id=request.user_id,
+            text=(
+                "✨ Отличные новости! Ваша заявка выполнена.\n"
+                f"ID:{request.id}. "
+                + (f"{details_line}\n" if details_line else "")
+                + (f"{contact_line}\n" if contact_line else "")
+                + "Спасибо за ожидание! Если потребуется дополнительная помощь, вы всегда можете оставить новую заявку."
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "Не удалось уведомить пользователя %s о выполнении заявки %s: %s", request.user_id, request.id, exc
+        )
+
+    if admin_message_meta and admin_message_meta.get("text"):
+        await _edit_message_content(
+            bot=bot,
+            chat_id=admin_id,
+            message_id=admin_message_meta["message_id"],
+            text=f"{admin_message_meta['text']}\n\n✅ Статус: Выполнено",
+            reply_markup=None,
+            has_media=admin_message_meta.get("has_media", False),
+        )
+
+    admin_message_id = admin_message_meta.get("message_id") if admin_message_meta else None
+    if admin_message_id:
+        updated_map = {admin_id: admin_message_id}
+        with get_db() as db:
+            request = db.query(Request).filter(Request.id == request_id).first()
+            if request:
+                save_admin_message_map(request, updated_map)
+                request.admin_message_id = admin_message_id
+                db.commit()
+
+    return True
 
 
 async def finish_admin_clarification(
@@ -211,16 +366,44 @@ async def admin_accept_request(callback_query: CallbackQuery, bot: Bot) -> None:
         admin_phone = admin_user.phone_number if admin_user else None
         request_user_id = request.user_id
         request_description = request.description or ""
+        admin_message_map = load_admin_message_map(request)
         db.commit()
         logger.info("Заявка ID:%s принята к исполнению администратором %s.", request.id, admin_id)
 
-    try:
-        await callback_query.message.edit_text(
-            f"{callback_query.message.text}\n\n✅ Статус: Принято к исполнению ({admin_full_name})",
-            reply_markup=None,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Не удалось обновить сообщение администратору для заявки %s: %s", request_id, exc)
+    for other_admin_id, message_id in admin_message_map.items():
+        if other_admin_id == admin_id:
+            continue
+        try:
+            await callback_query.bot.delete_message(chat_id=other_admin_id, message_id=message_id)
+            logger.info(
+                "Удалено уведомление о заявке %s для администратора %s после принятия.", request_id, other_admin_id
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "Не удалось удалить уведомление о заявке %s для администратора %s: %s",
+                request_id,
+                other_admin_id,
+                exc,
+            )
+
+    admin_message_id = admin_message_map.get(admin_id)
+    if admin_message_id:
+        updated_map = {admin_id: admin_message_id}
+        with get_db() as db:
+            request = db.query(Request).filter(Request.id == request_id).first()
+            if request:
+                save_admin_message_map(request, updated_map)
+                request.admin_message_id = admin_message_id
+                db.commit()
+
+    await _edit_message_content(
+        bot=callback_query.bot,
+        chat_id=callback_query.message.chat.id,
+        message_id=callback_query.message.message_id,
+        text=f"{callback_query.message.text}\n\n✅ Статус: Принято к исполнению ({admin_full_name})",
+        reply_markup=None,
+        has_media=bool(callback_query.message.photo or callback_query.message.document),
+    )
 
     user_full_name = admin_full_name if admin_full_name else "Неизвестный администратор"
     try:
@@ -397,8 +580,10 @@ async def admin_clarify_end_message(message: Message, state: FSMContext, bot: Bo
 
 
 @router.message(F.text == "Мои принятые заявки")
-async def show_assigned_requests(message: Message) -> None:
+async def show_assigned_requests(message: Message, state: FSMContext) -> None:
+    await _cleanup_menu_messages(state, message.bot, message.chat.id, "admin_assigned_messages")
     admin_id = message.from_user.id
+    sent_messages: list[int] = []
     with get_db() as db:
         admin_user = db.query(User).filter(User.id == admin_id).first()
         if not admin_user or admin_user.role not in ["it_admin", "aho_admin"]:
@@ -423,38 +608,44 @@ async def show_assigned_requests(message: Message) -> None:
             )
             return
 
-    for req in requests:
-        user = db.query(User).filter(User.id == req.user_id).first()
-        user_details = (
-            f"📞 Телефон: {user.phone_number}\n🏢 Организация: {user.organization}"
-            if user
-            else "Пользователь не найден"
-        )
-        if user and user.office_number:
-            user_details += f"\n🚪 Кабинет: {user.office_number}"
+        for req in requests:
+            user = db.query(User).filter(User.id == req.user_id).first()
+            user_details = (
+                f"📞 Телефон: {user.phone_number}\n🏢 Организация: {user.organization}"
+                if user
+                else "Пользователь не найден"
+            )
+            if user and user.office_number:
+                user_details += f"\n🚪 Кабинет: {user.office_number}"
 
-        keyboard_to_show = None
-        if req.status == "Принято":
-            keyboard_to_show = get_admin_new_request_keyboard(req.id)
-        elif req.status == "Принято к исполнению":
-            keyboard_to_show = get_admin_done_keyboard(req.id)
-        elif req.status == "Уточнение":
-            keyboard_to_show = get_admin_clarify_active_keyboard(req.id)
+            keyboard_to_show = None
+            if req.status == "Принято":
+                keyboard_to_show = get_admin_new_request_keyboard(req.id)
+            elif req.status == "Принято к исполнению":
+                keyboard_to_show = get_admin_done_keyboard(req.id)
+            elif req.status == "Уточнение":
+                keyboard_to_show = get_admin_clarify_active_keyboard(req.id)
 
-        request_text = (
-            f"🚨 Заявка ({req.request_type}) от {user.full_name if user else 'Неизвестный пользователь'} 🚨\n"
-            f"{user_details}\n"
-            f"📝 Описание: {req.description}\n"
-            f"⏰ Срочность: {'Как можно скорее' if req.urgency == 'ASAP' else f'К {req.due_date}'}\n"
-            f"🆔 Заявка ID: {req.id}\n\n"
-            f"✅ Статус: {req.status}"
-        )
-        await message.answer(request_text, reply_markup=keyboard_to_show)
+            request_text = (
+                f"🚨 Заявка ({req.request_type}) от {user.full_name if user else 'Неизвестный пользователь'} 🚨\n"
+                f"{user_details}\n"
+                f"📝 Описание: {req.description}\n"
+                f"⏰ Срочность: {'Как можно скорее' if req.urgency == 'ASAP' else f'К {req.due_date}'}\n"
+                f"🆔 Заявка ID: {req.id}\n\n"
+                f"✅ Статус: {req.status}"
+            )
+            sent = await message.answer(request_text, reply_markup=keyboard_to_show)
+            sent_messages.append(sent.message_id)
+
+    await state.update_data(admin_assigned_messages=sent_messages)
 
 
 @router.message(F.text == "Новые заявки")
-async def show_new_requests(message: Message) -> None:
+async def show_new_requests(message: Message, state: FSMContext) -> None:
+    await _cleanup_menu_messages(state, message.bot, message.chat.id, "admin_new_messages")
     admin_id = message.from_user.id
+    sent_messages: list[int] = []
+
     with get_db() as db:
         admin_user = db.query(User).filter(User.id == admin_id).first()
         if not admin_user or admin_user.role not in ["it_admin", "aho_admin"]:
@@ -503,18 +694,20 @@ async def show_new_requests(message: Message) -> None:
                 f"🆔 Заявка ID: {req.id}\n\n"
                 f"✅ Статус: {req.status}"
             )
-            await message.answer(request_text, reply_markup=keyboard_to_show)
+            sent = await message.answer(request_text, reply_markup=keyboard_to_show)
+            sent_messages.append(sent.message_id)
+
+        await state.update_data(admin_new_messages=sent_messages)
 
 
 @router.callback_query(F.data.startswith("admin_done_"))
-async def admin_done_request(callback_query: CallbackQuery, bot: Bot) -> None:
+async def admin_done_request(callback_query: CallbackQuery, state: FSMContext) -> None:
     await callback_query.answer()
     request_id = int(callback_query.data.split("_")[2])
     admin_id = callback_query.from_user.id
 
     with get_db() as db:
         request = db.query(Request).filter(Request.id == request_id).first()
-        admin_user = db.query(User).filter(User.id == admin_id).first()
 
         if not request:
             await callback_query.message.answer("Заявка не найдена.")
@@ -528,32 +721,79 @@ async def admin_done_request(callback_query: CallbackQuery, bot: Bot) -> None:
             await callback_query.message.answer("Эта заявка уже отмечена как выполненная.")
             return
 
-        request.status = "Выполнено"
-        request.completed_at = datetime.now()
-        db.commit()
-        logger.info("Заявка ID:%s отмечена как 'Выполнено' администратором %s.", request.id, admin_id)
+        await state.update_data(
+            completion_request_id=request_id,
+            completion_admin_message={
+                "message_id": callback_query.message.message_id,
+                "text": callback_query.message.caption or callback_query.message.text or "",
+                "has_media": bool(callback_query.message.photo or callback_query.message.document),
+            },
+        )
+        await state.set_state(AdminCompletionState.waiting_for_feedback)
+        await callback_query.message.answer(
+            "Перед завершением заявки отправьте пользователю файл/фото/текст (при необходимости)"
+            " или нажмите кнопку ниже, чтобы отметить без сообщения.",
+            reply_markup=get_admin_feedback_keyboard(request_id),
+        )
 
-        admin_full_name = admin_user.full_name if admin_user else None
-        admin_phone = admin_user.phone_number if admin_user else None
 
-        try:
-            details_line = f"Описание: {request.description[:150]}..." if request.description else ""
-            contact_line = ""
-            if admin_full_name or admin_phone:
-                contact_line = "Исполнитель: " + (admin_full_name or "")
-                if admin_phone:
-                    contact_line += f" (тел. {admin_phone})"
-            await bot.send_message(
-                chat_id=request.user_id,
-                text=(
-                    "✨ Отличные новости! Ваша заявка выполнена.\n"
-                    f"ID:{request.id}. "
-                    + (f"{details_line}\n" if details_line else "")
-                    + (f"{contact_line}\n" if contact_line else "")
-                    + "Спасибо за ожидание! Если потребуется дополнительная помощь, вы всегда можете оставить новую заявку."
-                ),
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.error(
-                "Не удалось уведомить пользователя %s о выполнении заявки %s: %s", request.user_id, request.id, exc
-            )
+@router.callback_query(AdminCompletionState.waiting_for_feedback, F.data.startswith("admin_feedback_skip_"))
+async def admin_feedback_skip(callback_query: CallbackQuery, state: FSMContext) -> None:
+    await callback_query.answer()
+    state_data = await state.get_data()
+    request_id = state_data.get("completion_request_id")
+    admin_message_meta = state_data.get("completion_admin_message")
+
+    if not request_id:
+        await callback_query.message.answer("Не удалось определить заявку для завершения.")
+        await state.clear()
+        return
+
+    success = await _complete_request(
+        bot=callback_query.bot,
+        admin_id=callback_query.from_user.id,
+        request_id=request_id,
+        admin_message_meta=admin_message_meta,
+        feedback_message=None,
+    )
+    await state.clear()
+    if success:
+        await callback_query.message.answer("Заявка отмечена как выполненная.")
+    else:
+        await callback_query.message.answer("Не удалось завершить заявку. Проверьте статус и повторите попытку.")
+
+
+@router.callback_query(AdminCompletionState.waiting_for_feedback, F.data.startswith("admin_feedback_cancel_"))
+async def admin_feedback_cancel(callback_query: CallbackQuery, state: FSMContext) -> None:
+    await callback_query.answer("Отменено")
+    await state.clear()
+    await callback_query.message.answer("Отметка о выполнении отменена. Вы можете повторить действие позже.")
+
+
+@router.message(StateFilter(AdminCompletionState.waiting_for_feedback))
+async def admin_feedback_message(message: Message, state: FSMContext, bot: Bot) -> None:
+    state_data = await state.get_data()
+    request_id = state_data.get("completion_request_id")
+    admin_message_meta = state_data.get("completion_admin_message")
+
+    if not request_id:
+        await message.answer("Не удалось определить заявку для завершения. Попробуйте снова.")
+        await state.clear()
+        return
+
+    if not (message.text or message.photo or message.document):
+        await message.answer("Отправьте текст, фото или документ в качестве отчета или нажмите кнопку пропуска.")
+        return
+
+    success = await _complete_request(
+        bot=bot,
+        admin_id=message.from_user.id,
+        request_id=request_id,
+        admin_message_meta=admin_message_meta,
+        feedback_message=message,
+    )
+    await state.clear()
+    if success:
+        await message.answer("Заявка отмечена как выполненная и отчет отправлен пользователю.")
+    else:
+        await message.answer("Не удалось завершить заявку. Убедитесь, что вы являетесь исполнителем.")

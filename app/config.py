@@ -9,8 +9,8 @@ if not BOT_TOKEN:
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./bot.db")
 
-IT_ADMIN_IDS = [721618593]
-AHO_ADMIN_IDS = [721618593]
+IT_ADMIN_IDS = [721618593, 407126067,1157378714]
+AHO_ADMIN_IDS = [5457745923]
 
 PREDEFINED_ORGANIZATIONS = [
     "Министерство финансов Липецкой области",

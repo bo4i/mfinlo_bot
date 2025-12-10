@@ -6,6 +6,7 @@ from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
+from sqlalchemy import or_
 
 from app.db import get_db
 from app.db.models import Request, User
@@ -17,6 +18,17 @@ from app.states.clarification import ClarificationState
 logger = logging.getLogger(__name__)
 
 router = Router()
+
+
+async def _cleanup_menu_messages(state: FSMContext, bot: Bot, chat_id: int, key: str) -> None:
+    state_data = await state.get_data()
+    message_ids = state_data.get(key, [])
+    for message_id in message_ids:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Не удалось удалить сообщение %s из меню %s: %s", message_id, key, exc)
+    await state.update_data({key: []})
 
 
 async def finish_user_clarification(
@@ -106,7 +118,8 @@ async def finish_user_clarification(
 
 
 @router.message(F.text == "Мои заявки")
-async def show_user_requests(message: Message) -> None:
+async def show_user_requests(message: Message, state: FSMContext) -> None:
+    await _cleanup_menu_messages(state, message.bot, message.chat.id, "user_requests_messages")
     user_id = message.from_user.id
     with get_db() as db:
         user = db.query(User).filter(User.id == user_id).first()
@@ -115,22 +128,24 @@ async def show_user_requests(message: Message) -> None:
             await message.answer("Вы не зарегистрированы или регистрация не завершена. Пожалуйста, начните с команды /start.")
             return
 
-        two_days_ago = datetime.now() - timedelta(days=2)
+        start_of_today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
         requests = (
             db.query(Request)
             .filter(
                 Request.user_id == user_id,
-                (Request.status != "Выполнено") | (Request.completed_at >= two_days_ago),
+                or_(Request.created_at >= start_of_today, Request.status != "Выполнено"),
             )
             .order_by(Request.created_at.desc())
             .all()
-    )
+
+        )
 
         if not requests:
             await message.answer("У вас пока нет созданных заявок.")
             return
 
+        sent_messages = []
         for req in requests:
             admin_info = ""
             if req.assigned_admin_id:
@@ -149,12 +164,16 @@ async def show_user_requests(message: Message) -> None:
             if req.status == "Выполнено" and req.completed_at:
                 response_text += f"Выполнена: {req.completed_at.strftime('%Y-%m-%d %H:%M')}\n"
 
-            if req.status != "Выполнено" or (
-                    req.status == "Выполнено" and req.completed_at and req.completed_at >= two_days_ago
-            ):
-                await message.answer(response_text, reply_markup=get_user_request_actions_keyboard(req.id, req.status))
+            if req.status != "Выполнено" or req.created_at >= start_of_today:
+                sent = await message.answer(
+                    response_text, reply_markup=get_user_request_actions_keyboard(req.id, req.status)
+                )
             else:
-                await message.answer(response_text)
+                sent = await message.answer(response_text)
+
+            sent_messages.append(sent.message_id)
+
+            await state.update_data(user_requests_messages=sent_messages)
 
 
 @router.callback_query(F.data.startswith("user_done_"))
