@@ -72,33 +72,37 @@ async def _cleanup_menu_messages(state: FSMContext, bot: Bot, chat_id: int, key:
     await state.update_data({key: []})
 
 
-async def _send_feedback_to_user(bot: Bot, request: Request, admin_user: User | None, feedback_message: Message | None):
+async def _send_feedback_to_user(
+    bot: Bot,
+    request_data: dict,
+    admin_name: str,
+    feedback_message: Message | None,
+):
     if not feedback_message:
         return
 
-    admin_name = admin_user.full_name if admin_user else "Администратор"
-    prefix = f"Сообщение от администратора {admin_name} по заявке ID:{request.id}\n"
+    prefix = f"Сообщение от администратора {admin_name} по заявке ID:{request_data['id']}\n"
 
     try:
         if feedback_message.photo:
             await bot.send_photo(
-                chat_id=request.user_id,
+                chat_id=request_data["user_id"],
                 photo=feedback_message.photo[-1].file_id,
                 caption=prefix + (feedback_message.caption or ""),
             )
         elif feedback_message.document:
             await bot.send_document(
-                chat_id=request.user_id,
+                chat_id=request_data["user_id"],
                 document=feedback_message.document.file_id,
                 caption=prefix + (feedback_message.caption or ""),
             )
         elif feedback_message.text:
-            await bot.send_message(chat_id=request.user_id, text=prefix + feedback_message.text)
+            await bot.send_message(chat_id=request_data["user_id"], text=prefix + feedback_message.text)
     except Exception as exc:  # noqa: BLE001
         logger.error(
             "Не удалось отправить итоговое сообщение пользователю %s для заявки %s: %s",
-            request.user_id,
-            request.id,
+            request_data["user_id"],
+            request_data["id"],
             exc,
         )
 
@@ -124,27 +128,43 @@ async def _complete_request(
         if request.status == "Выполнено":
             return False
 
+        request_data = {
+            "id": request.id,
+            "user_id": request.user_id,
+            "description": request.description,
+            "admin_message_id": request.admin_message_id,
+        }
+        admin_data = {
+            "full_name": admin_user.full_name if admin_user else None,
+            "phone_number": admin_user.phone_number if admin_user else None,
+        }
+
         request.status = "Выполнено"
         request.completed_at = datetime.now()
         db.commit()
 
-    await _send_feedback_to_user(bot, request, admin_user, feedback_message)
+    await _send_feedback_to_user(
+        bot,
+        request_data,
+        admin_data["full_name"] or "Администратор",
+        feedback_message,
+    )
 
-    admin_full_name = admin_user.full_name if admin_user else None
-    admin_phone = admin_user.phone_number if admin_user else None
+    admin_full_name = admin_data["full_name"]
+    admin_phone = admin_data["phone_number"]
 
     try:
-        details_line = f"Описание: {request.description[:150]}..." if request.description else ""
+        details_line = f"Описание: {request_data['description'][:150]}..." if request_data["description"] else ""
         contact_line = ""
         if admin_full_name or admin_phone:
             contact_line = "Исполнитель: " + (admin_full_name or "")
             if admin_phone:
                 contact_line += f" (тел. {admin_phone})"
         await bot.send_message(
-            chat_id=request.user_id,
+            chat_id=request_data["user_id"],
             text=(
                 "✨ Отличные новости! Ваша заявка выполнена.\n"
-                f"ID:{request.id}. "
+                f"ID:{request_data['id']}. "
                 + (f"{details_line}\n" if details_line else "")
                 + (f"{contact_line}\n" if contact_line else "")
                 + "Спасибо за ожидание! Если потребуется дополнительная помощь, вы всегда можете оставить новую заявку."
@@ -152,7 +172,7 @@ async def _complete_request(
         )
     except Exception as exc:  # noqa: BLE001
         logger.error(
-            "Не удалось уведомить пользователя %s о выполнении заявки %s: %s", request.user_id, request.id, exc
+            "Не удалось уведомить пользователя %s о выполнении заявки %s: %s", request_data["user_id"], request_data["id"], exc
         )
 
     if admin_message_meta and admin_message_meta.get("text"):
@@ -598,7 +618,7 @@ async def show_assigned_requests(message: Message, state: FSMContext) -> None:
                 Request.assigned_admin_id == admin_id,
                 (Request.status != "Выполнено") | (Request.completed_at >= today_start),
             )
-            .order_by(Request.created_at.desc())
+            .order_by(Request.id.asc())
             .all()
         )
 

@@ -136,7 +136,7 @@ async def show_user_requests(message: Message, state: FSMContext) -> None:
                 Request.user_id == user_id,
                 or_(Request.created_at >= start_of_today, Request.status != "Выполнено"),
             )
-            .order_by(Request.created_at.desc())
+            .order_by(Request.id.asc())
             .all()
 
         )
